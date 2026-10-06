@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7ef" />
+    <meta name="description" content="Explore crop-specific marketplaces for Kenyan growers, buyers, and sellers." />
+    <title>Mavuno Market | Kenya's crop marketplaces</title>
+    <% if (isProduction) { %>
+      <% assets.css.forEach((file) => { %><link rel="stylesheet" href="<%= file %>" /><% }) %>
+    <% } %>
+  </head>
+  <body>
+    <div id="root"></div>
+    <% if (isProduction) { %>
+      <script type="module" src="<%= assets.js %>"></script>
+    <% } else { %>
+      <script type="module" src="/@vite/client"></script>
+      <script type="module" src="<%= assets.js %>"></script>
+    <% } %>
+  </body>
+</html>

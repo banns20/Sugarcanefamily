@@ -1,0 +1,32 @@
+{
+  "name": "waganist",
+  "version": "1.0.0",
+  "description": "Separate crop marketplaces for Kenyan growers, buyers, and sellers.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "vite build",
+    "start": "node server.js --production"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "ejs": "^7.0.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "file-type": "^22.1.1",
+    "lucide-react": "^1.52.0",
+    "multer": "^2.4.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.3.2"
+  }
+}
