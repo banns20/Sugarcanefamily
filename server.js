@@ -4,10 +4,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { backup, DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { fileTypeFromBuffer } from 'file-type';
 import multer from 'multer';
 import { rateLimit } from 'express-rate-limit';
+import { Pool } from 'pg';
+import { del, put } from '@vercel/blob';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -16,6 +18,7 @@ const dataDir = isProduction ? path.join(os.tmpdir(), 'sugarcanefamily-data') : 
 const cropsDataDir = path.join(dataDir, 'crops');
 const legacySugarcanePath = path.join(dataDir, 'cane-country.sqlite');
 const uploadDir = isProduction ? path.join(os.tmpdir(), 'sugarcanefamily-uploads') : path.join(dirname, 'uploads');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
 const sessionDuration = 30 * 24 * 60 * 60 * 1000;
 const browserSessionDuration = 24 * 60 * 60 * 1000;
 const counties = [
@@ -32,104 +35,88 @@ const crops = [
   { id: 'sugarcane', name: 'Sugarcane', standingLabel: 'Standing sugarcane', fieldLabel: 'Sugarcane variety' },
 ];
 const cropById = new Map(crops.map((crop) => [crop.id, crop]));
-const databases = new Map();
 
-fs.mkdirSync(dataDir, { recursive: true });
-fs.mkdirSync(cropsDataDir, { recursive: true });
-fs.mkdirSync(uploadDir, { recursive: true });
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for durable marketplace storage.');
 
-async function migrateLegacySugarcane() {
-  const targetPath = path.join(cropsDataDir, 'sugarcane.sqlite');
-  if (fs.existsSync(targetPath) || !fs.existsSync(legacySugarcanePath)) return;
+async function uploadLegacyPhoto(cropId, listing) {
+  if (/^https:\/\//i.test(listing.image_url)) return listing.image_url;
+  const relativePath = decodeURIComponent(String(listing.image_url ?? '')).replace(/^\/+/, '');
+  const sourcePath = path.resolve(uploadDir, relativePath.replace(/^uploads\//, ''));
+  if (!sourcePath.startsWith(`${path.resolve(uploadDir)}${path.sep}`) || !fs.existsSync(sourcePath)) return listing.image_url;
+  const content = await fs.promises.readFile(sourcePath);
+  const extension = path.extname(sourcePath).toLowerCase();
+  const contentType = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }[extension];
+  if (!contentType) return listing.image_url;
+  const fingerprint = createHash('sha256').update(content).digest('hex').slice(0, 24);
+  const blob = await put(`legacy/${cropId}/${listing.id}-${fingerprint}${extension}`, content, {
+    access: 'public', contentType, addRandomSuffix: false, allowOverwrite: true,
+  });
+  return blob.url;
+}
 
-  const legacyDatabase = new DatabaseSync(legacySugarcanePath);
+async function migrateLegacyDatabase(crop, sqlitePath) {
+  if (!fs.existsSync(sqlitePath)) return;
+  const legacy = new DatabaseSync(sqlitePath, { readOnly: true });
+  const client = await pool.connect();
   try {
-    await backup(legacyDatabase, targetPath);
+    const userColumns = new Set(legacy.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+    const listingColumns = new Set(legacy.prepare('PRAGMA table_info(listings)').all().map((column) => column.name));
+    const notificationColumns = new Set(legacy.prepare('PRAGMA table_info(notifications)').all().map((column) => column.name));
+    if (!userColumns.has('phone') || !listingColumns.has('image_url')) return;
+    const pick = (row, columns, name, fallback = null) => columns.has(name) ? row[name] : fallback;
+    await client.query('BEGIN');
+    const userIds = new Map();
+    for (const row of legacy.prepare('SELECT * FROM users').all()) {
+      const inserted = await client.query(`
+        INSERT INTO market_users (id,crop_id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11::timestamptz,NOW()))
+        ON CONFLICT (crop_id, phone) DO NOTHING RETURNING id
+      `, [row.id,crop.id,row.phone,row.password_salt,row.password_hash,pick(row,userColumns,'role','seller'),pick(row,userColumns,'display_name',''),pick(row,userColumns,'profile_county',''),pick(row,userColumns,'bio',''),Boolean(pick(row,userColumns,'listing_notifications_enabled',0)),pick(row,userColumns,'created_at')]);
+      const account = inserted.rows[0] ?? (await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone])).rows[0];
+      userIds.set(row.id, account.id);
+    }
+    for (const row of legacy.prepare('SELECT * FROM listings').all()) {
+      if (pick(row, listingColumns, 'is_sample', 0)) continue;
+      const ownerId = userIds.get(row.owner_user_id) ?? null;
+      const savedListing = await client.query('SELECT image_url FROM market_listings WHERE id=$1 AND crop_id=$2', [row.id,crop.id]);
+      const existingImageUrl = savedListing.rows[0]?.image_url;
+      const imageUrl = /^https:\/\//i.test(existingImageUrl ?? '') ? existingImageUrl : await uploadLegacyPhoto(crop.id, row);
+      await client.query(`
+        INSERT INTO market_listings (id,crop_id,title,county,locality,acres,price_kes,kind,crop_variety,expected_harvest,description,image_url,owner_user_id,is_sample,latitude,longitude,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,FALSE,$14,$15,COALESCE($16::timestamptz,NOW()))
+        ON CONFLICT (id) DO UPDATE SET image_url=EXCLUDED.image_url
+      `, [row.id, crop.id, row.title, row.county, row.locality, row.acres, row.price_kes, row.kind, row.crop_variety, pick(row, listingColumns, 'expected_harvest', ''), pick(row, listingColumns, 'description', ''), imageUrl, ownerId, pick(row, listingColumns, 'latitude'), pick(row, listingColumns, 'longitude'), pick(row, listingColumns, 'created_at')]);
+    }
+    if (legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get()) {
+      for (const row of legacy.prepare('SELECT * FROM sessions WHERE expires_at > ?').all(Date.now())) {
+        const userId = userIds.get(row.user_id);
+        if (userId) await client.query('INSERT INTO market_sessions (token_hash,crop_id,user_id,expires_at) VALUES ($1,$2,$3,$4) ON CONFLICT (token_hash) DO NOTHING', [row.token_hash, crop.id, userId, row.expires_at]);
+      }
+    }
+    if (notificationColumns.size && legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notifications'").get()) {
+      for (const row of legacy.prepare('SELECT * FROM notifications').all()) {
+        const userId = userIds.get(row.user_id);
+        if (userId) await client.query(`INSERT INTO market_notifications (crop_id,user_id,listing_id,title,body,created_at,read_at) VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamptz,NOW()),$7) ON CONFLICT (user_id,listing_id) DO NOTHING`, [crop.id,userId,row.listing_id,row.title,row.body,pick(row, notificationColumns, 'created_at'),pick(row, notificationColumns, 'read_at')]);
+      }
+    }
+    await client.query("SELECT setval(pg_get_serial_sequence('public.market_users','id'), GREATEST(COALESCE((SELECT MAX(id) FROM market_users),1),1), EXISTS(SELECT 1 FROM market_users))");
+    await client.query("SELECT setval(pg_get_serial_sequence('public.market_listings','id'), GREATEST(COALESCE((SELECT MAX(id) FROM market_listings),1),1), EXISTS(SELECT 1 FROM market_listings))");
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
   } finally {
-    legacyDatabase.close();
+    client.release();
+    legacy.close();
   }
 }
 
-await migrateLegacySugarcane();
-
-function ensureColumn(database, table, columnName, definition, migration) {
-  const columns = database.prepare(`PRAGMA table_info(${table})`).all();
-  if (!columns.some((column) => column.name === columnName)) database.exec(migration ?? `ALTER TABLE ${table} ADD COLUMN ${definition}`);
+for (const crop of crops) {
+  const paths = [path.join(cropsDataDir, `${crop.id}.sqlite`), ...(crop.id === 'sugarcane' ? [legacySugarcanePath] : [])];
+  for (const sqlitePath of paths) await migrateLegacyDatabase(crop, sqlitePath);
 }
 
-function openCropDatabase(crop) {
-  const database = new DatabaseSync(path.join(cropsDataDir, `${crop.id}.sqlite`));
-  database.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY,
-      phone TEXT NOT NULL UNIQUE,
-      password_salt TEXT NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'seller',
-      display_name TEXT NOT NULL DEFAULT '',
-      profile_county TEXT NOT NULL DEFAULT '',
-      bio TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      token_hash TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS listings (
-      id INTEGER PRIMARY KEY,
-      title TEXT NOT NULL,
-      county TEXT NOT NULL,
-      locality TEXT NOT NULL,
-      acres REAL NOT NULL,
-      price_kes INTEGER NOT NULL,
-      kind TEXT NOT NULL,
-      crop_variety TEXT NOT NULL,
-      expected_harvest TEXT NOT NULL DEFAULT '',
-      description TEXT NOT NULL DEFAULT '',
-      image_url TEXT NOT NULL,
-      owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      is_sample INTEGER NOT NULL DEFAULT 0,
-      latitude REAL,
-      longitude REAL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS notifications (
-      id INTEGER PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      read_at TEXT,
-      UNIQUE(user_id, listing_id)
-    );
-    CREATE INDEX IF NOT EXISTS listings_created_at_idx ON listings(created_at DESC);
-    CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
-    CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications(user_id, created_at DESC, id DESC);
-  `);
-
-  ensureColumn(database, 'users', 'role', 'role TEXT NOT NULL DEFAULT \'seller\'');
-  ensureColumn(database, 'users', 'display_name', 'display_name TEXT NOT NULL DEFAULT \'\'');
-  ensureColumn(database, 'users', 'profile_county', 'profile_county TEXT NOT NULL DEFAULT \'\'');
-  ensureColumn(database, 'users', 'bio', 'bio TEXT NOT NULL DEFAULT \'\'');
-  ensureColumn(database, 'users', 'listing_notifications_enabled', 'listing_notifications_enabled INTEGER NOT NULL DEFAULT 0');
-  const listingColumns = database.prepare('PRAGMA table_info(listings)').all();
-  if (!listingColumns.some((column) => column.name === 'is_sample')) {
-    database.exec('ALTER TABLE listings ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0');
-    database.exec('UPDATE listings SET is_sample = 1 WHERE owner_user_id IS NULL');
-  }
-  ensureColumn(database, 'listings', 'latitude', 'latitude REAL');
-  ensureColumn(database, 'listings', 'longitude', 'longitude REAL');
-  if (crop.id === 'sugarcane') database.prepare('DELETE FROM listings WHERE is_sample = 1').run();
-  database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
-
-  databases.set(crop.id, database);
-}
-
-for (const crop of crops) openCropDatabase(crop);
+pool.on('error', (error) => console.error('Unexpected Neon connection error:', error));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -139,12 +126,20 @@ const upload = multer({
   },
 });
 
+app.set('trust proxy', 1);
 app.set('view engine', 'ejs');
 app.set('views', path.join(dirname, 'views'));
 app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(dirname, 'public'), { maxAge: isProduction ? '1d' : 0 }));
 app.use('/vendor/leaflet', express.static(path.join(dirname, 'node_modules/leaflet/dist'), { maxAge: isProduction ? '1d' : 0 }));
-app.use('/uploads', express.static(uploadDir, { maxAge: '1d', immutable: true }));
+app.use((_request, response, next) => {
+  response.set('X-Content-Type-Options', 'nosniff');
+  response.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.set('X-Frame-Options', 'SAMEORIGIN');
+  response.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  if (_request.secure) response.set('Strict-Transport-Security', 'max-age=63072000');
+  next();
+});
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -162,53 +157,46 @@ function cookieName(cropId) {
   return `mavuno_${cropId}_session`;
 }
 
-function readSession(request) {
-  const name = cookieName(request.crop.id);
-  const cookieValue = request.headers.cookie?.split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${name}=`))
-    ?.slice(name.length + 1);
+function cookieToken(request, cropId) {
+  const name = cookieName(cropId);
+  const cookieValue = request.headers.cookie?.split(';').map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
   if (!cookieValue) return null;
-
-  let token;
-  try {
-    token = decodeURIComponent(cookieValue);
-  } catch {
-    return null;
-  }
-
-  const session = request.database.prepare(`
-    SELECT users.id, users.phone, users.role, users.display_name, users.profile_county, users.bio, users.listing_notifications_enabled FROM sessions
-    JOIN users ON users.id = sessions.user_id
-    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
-  `).get(digest(token), Date.now());
-  return session ?? null;
+  try { return decodeURIComponent(cookieValue); } catch { return null; }
 }
 
-function requireAuth(request, response, next) {
-  request.user = readSession(request);
+async function readSession(request) {
+  const token = cookieToken(request, request.crop.id);
+  if (!token) return null;
+  const result = await pool.query(`
+    SELECT u.id, u.phone, u.role, u.display_name, u.profile_county, u.bio,
+      u.listing_notifications_enabled, u.listing_credits
+    FROM market_sessions s JOIN market_users u ON u.id=s.user_id
+    WHERE s.token_hash=$1 AND s.crop_id=$2 AND s.expires_at>$3
+  `, [digest(token), request.crop.id, Date.now()]);
+  return result.rows[0] ?? null;
+}
+
+async function requireAuth(request, response, next) {
+  request.user = await readSession(request);
   if (!request.user) return response.status(401).json({ error: 'Sign in with your phone number to continue.' });
   next();
 }
 
-function createSession(request, user, response, rememberMe = true) {
+async function createSession(request, user, response, rememberMe = true) {
   const token = randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + (rememberMe ? sessionDuration : browserSessionDuration);
-  request.database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-    .run(digest(token), user.id, expiresAt);
-  const cookieOptions = {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.COOKIE_SECURE === 'true',
-    path: '/',
-  };
-  if (rememberMe) cookieOptions.maxAge = sessionDuration;
-  response.cookie(cookieName(request.crop.id), token, cookieOptions);
+  await pool.query('INSERT INTO market_sessions (token_hash,crop_id,user_id,expires_at) VALUES ($1,$2,$3,$4)',
+    [digest(token), request.crop.id, user.id, expiresAt]);
+  const secure = request.secure || process.env.COOKIE_SECURE === 'true';
+  const sameSite = secure ? 'None' : 'Lax';
+  const maxAge = rememberMe ? `; Max-Age=${Math.floor(sessionDuration / 1000)}` : '';
+  response.append('Set-Cookie', `${cookieName(request.crop.id)}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=${sameSite}${secure ? '; Secure' : ''}${maxAge}`);
 }
 
 function publicListing(row, crop) {
   return {
-    id: row.id,
+    id: Number(row.id),
     title: row.title,
     county: row.county,
     locality: row.locality,
@@ -224,8 +212,6 @@ function publicListing(row, crop) {
     tag: row.is_sample ? 'Example listing' : row.kind === crop.standingLabel ? 'Crop already growing' : 'Land available to lease',
     posted: row.created_at,
     description: row.description,
-    latitude: row.latitude == null ? null : Number(row.latitude),
-    longitude: row.longitude == null ? null : Number(row.longitude),
   };
 }
 
@@ -312,11 +298,10 @@ app.use('/api/:cropId', (request, response, next) => {
   const crop = cropById.get(request.params.cropId);
   if (!crop) return response.status(404).json({ error: 'Choose a supported crop marketplace.' });
   request.crop = crop;
-  request.database = databases.get(crop.id);
   next();
 });
 
-app.post('/api/:cropId/auth/signup', authLimiter, (request, response) => {
+app.post('/api/:cropId/auth/signup', authLimiter, async (request, response) => {
   const phone = normalizePhone(request.body?.phone);
   const password = String(request.body?.password ?? '');
   const role = String(request.body?.role ?? '');
@@ -327,131 +312,389 @@ app.post('/api/:cropId/auth/signup', authLimiter, (request, response) => {
   const salt = randomBytes(16).toString('hex');
   const passwordHash = scryptSync(password, salt, 64).toString('hex');
   try {
-    const result = request.database.prepare('INSERT INTO users (phone, password_salt, password_hash, role) VALUES (?, ?, ?, ?)')
-      .run(phone, salt, passwordHash, role);
-    const user = { id: Number(result.lastInsertRowid), phone, role };
-    createSession(request, user, response);
-    return response.status(201).json({ user: { phone, role, displayName: '', county: '', bio: '' } });
+    const result = await pool.query('INSERT INTO market_users (crop_id,phone,password_salt,password_hash,role) VALUES ($1,$2,$3,$4,$5) RETURNING id', [request.crop.id,phone,salt,passwordHash,role]);
+    const user = { id: result.rows[0].id, phone, role };
+    await createSession(request, user, response);
+    return response.status(201).json({ user: { phone, role, displayName: '', county: '', bio: '', listingCredits: 0 } });
   } catch (error) {
-    if (error.message.includes('UNIQUE constraint failed: users.phone')) {
-      return response.status(409).json({ error: 'An account already exists for this crop and number. Sign in instead.' });
-    }
+    if (error.code === '23505') return response.status(409).json({ error: 'An account already exists for this crop and number. Sign in instead.' });
     throw error;
   }
 });
 
-app.post('/api/:cropId/auth/login', authLimiter, (request, response) => {
+app.post('/api/:cropId/auth/login', authLimiter, async (request, response) => {
   const phone = normalizePhone(request.body?.phone);
   const password = String(request.body?.password ?? '');
   if (!phone || !password) return response.status(400).json({ error: 'Enter your Kenyan phone number and password.' });
-
-  const record = request.database.prepare('SELECT id, phone, password_salt, password_hash, role, display_name, profile_county, bio, listing_notifications_enabled FROM users WHERE phone = ?').get(phone);
+  const result = await pool.query('SELECT id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,listing_credits FROM market_users WHERE crop_id=$1 AND phone=$2', [request.crop.id,phone]);
+  const record = result.rows[0];
   if (!record) return response.status(401).json({ error: 'That number and password do not match.' });
   const candidate = scryptSync(password, record.password_salt, 64);
   const stored = Buffer.from(record.password_hash, 'hex');
-  if (stored.length !== candidate.length || !timingSafeEqual(stored, candidate)) {
-    return response.status(401).json({ error: 'That number and password do not match.' });
-  }
-
-  createSession(request, { id: record.id, phone: record.phone, role: record.role }, response, request.body?.rememberMe === true);
+  if (stored.length !== candidate.length || !timingSafeEqual(stored, candidate)) return response.status(401).json({ error: 'That number and password do not match.' });
+  await createSession(request, record, response, request.body?.rememberMe === true);
   return response.json({ user: {
     phone: record.phone, role: record.role, displayName: record.display_name,
     county: record.profile_county, bio: record.bio,
-    listingNotificationsEnabled: Boolean(record.listing_notifications_enabled),
+    listingNotificationsEnabled: Boolean(record.listing_notifications_enabled), listingCredits: record.listing_credits,
   } });
 });
 
-app.get('/api/:cropId/auth/session', (request, response) => {
-  const user = readSession(request);
+app.get('/api/:cropId/auth/session', async (request, response) => {
+  const user = await readSession(request);
   response.json({ user: user ? {
     phone: user.phone, role: user.role, displayName: user.display_name,
     county: user.profile_county, bio: user.bio,
-    listingNotificationsEnabled: Boolean(user.listing_notifications_enabled),
+    listingNotificationsEnabled: Boolean(user.listing_notifications_enabled), listingCredits: user.listing_credits,
   } : null });
 });
 
-app.patch('/api/:cropId/auth/role', requireAuth, (request, response) => {
+app.patch('/api/:cropId/auth/role', requireAuth, async (request, response) => {
   const role = String(request.body?.role ?? '');
   if (!['buyer', 'seller'].includes(role)) return response.status(400).json({ error: 'Choose buyer or seller mode.' });
-  request.database.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, request.user.id);
+  await pool.query('UPDATE market_users SET role=$1 WHERE id=$2 AND crop_id=$3', [role,request.user.id,request.crop.id]);
   response.json({ user: {
     phone: request.user.phone, role, displayName: request.user.display_name,
     county: request.user.profile_county, bio: request.user.bio,
-    listingNotificationsEnabled: Boolean(request.user.listing_notifications_enabled),
+    listingNotificationsEnabled: Boolean(request.user.listing_notifications_enabled), listingCredits: request.user.listing_credits,
   } });
 });
 
-app.patch('/api/:cropId/auth/profile', requireAuth, (request, response) => {
+app.patch('/api/:cropId/auth/profile', requireAuth, async (request, response) => {
   const displayName = String(request.body?.displayName ?? '').trim();
   const county = String(request.body?.county ?? '').trim();
   const bio = String(request.body?.bio ?? '').trim();
   const listingNotificationsEnabled = request.body?.listingNotificationsEnabled === true;
-  if (displayName.length < 2 || displayName.length > 60) {
-    return response.status(400).json({ error: 'Your name must be between 2 and 60 characters.' });
-  }
-  if (county && !counties.includes(county)) {
-    return response.status(400).json({ error: 'Choose a valid county or leave it blank.' });
-  }
+  if (displayName.length < 2 || displayName.length > 60) return response.status(400).json({ error: 'Your name must be between 2 and 60 characters.' });
+  if (county && !counties.includes(county)) return response.status(400).json({ error: 'Choose a valid county or leave it blank.' });
   if (bio.length > 500) return response.status(400).json({ error: 'Your introduction must be 500 characters or fewer.' });
-  if (listingNotificationsEnabled && !county) {
-    return response.status(400).json({ error: 'Choose a county before turning on new-listing notifications.' });
-  }
-
-  request.database.prepare('UPDATE users SET display_name = ?, profile_county = ?, bio = ?, listing_notifications_enabled = ? WHERE id = ?')
-    .run(displayName, county, bio, listingNotificationsEnabled ? 1 : 0, request.user.id);
+  if (listingNotificationsEnabled && !county) return response.status(400).json({ error: 'Choose a county before turning on new-listing notifications.' });
+  await pool.query('UPDATE market_users SET display_name=$1,profile_county=$2,bio=$3,listing_notifications_enabled=$4 WHERE id=$5 AND crop_id=$6', [displayName,county,bio,listingNotificationsEnabled,request.user.id,request.crop.id]);
   response.json({ user: {
     phone: request.user.phone, role: request.user.role, displayName, county, bio,
-    listingNotificationsEnabled,
+    listingNotificationsEnabled, listingCredits: request.user.listing_credits,
   } });
 });
 
-app.post('/api/:cropId/auth/logout', (request, response) => {
-  const name = cookieName(request.crop.id);
-  const user = readSession(request);
-  if (user) {
-    const token = request.headers.cookie?.split(';').map((part) => part.trim())
-      .find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
-    if (token) request.database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(digest(decodeURIComponent(token)));
-  }
-  response.clearCookie(name, { httpOnly: true, sameSite: 'lax', path: '/' });
+app.post('/api/:cropId/auth/logout', async (request, response) => {
+  const token = cookieToken(request, request.crop.id);
+  if (token) await pool.query('DELETE FROM market_sessions WHERE token_hash=$1 AND crop_id=$2', [digest(token),request.crop.id]);
+  const secure = request.secure || process.env.COOKIE_SECURE === 'true';
+  response.append('Set-Cookie', `${cookieName(request.crop.id)}=; Path=/; HttpOnly; SameSite=${secure ? 'None' : 'Lax'}; Max-Age=0${secure ? '; Secure' : ''}`);
   response.json({ ok: true });
 });
 
-app.get('/api/:cropId/notifications', requireAuth, (request, response) => {
-  const notifications = request.database.prepare(`
-    SELECT id, listing_id AS listingId, title, body, created_at AS createdAt, read_at AS readAt
-    FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 30
-  `).all(request.user.id);
-  const unreadCount = request.database.prepare(
-    'SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL',
-  ).get(request.user.id).count;
-  response.json({ notifications, unreadCount });
+app.get('/api/:cropId/notifications', requireAuth, async (request, response) => {
+  const result = await pool.query(`
+    SELECT id,listing_id AS "listingId",title,body,created_at AS "createdAt",read_at AS "readAt"
+    FROM market_notifications WHERE user_id=$1 AND crop_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30
+  `, [request.user.id,request.crop.id]);
+  const unread = await pool.query('SELECT COUNT(*)::integer AS count FROM market_notifications WHERE user_id=$1 AND crop_id=$2 AND read_at IS NULL', [request.user.id,request.crop.id]);
+  response.json({ notifications: result.rows, unreadCount: unread.rows[0].count });
 });
 
-app.post('/api/:cropId/notifications/read-all', requireAuth, (request, response) => {
-  request.database.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND read_at IS NULL')
-    .run(request.user.id);
+app.post('/api/:cropId/notifications/read-all', requireAuth, async (request, response) => {
+  await pool.query('UPDATE market_notifications SET read_at=NOW() WHERE user_id=$1 AND crop_id=$2 AND read_at IS NULL', [request.user.id,request.crop.id]);
   response.json({ ok: true });
 });
 
-app.post('/api/:cropId/notifications/:id/read', requireAuth, (request, response) => {
+app.post('/api/:cropId/notifications/:id/read', requireAuth, async (request, response) => {
   const notificationId = Number(request.params.id);
-  if (!Number.isSafeInteger(notificationId) || notificationId <= 0) {
-    return response.status(400).json({ error: 'Choose a valid notification.' });
-  }
-  request.database.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?')
-    .run(notificationId, request.user.id);
+  if (!Number.isSafeInteger(notificationId) || notificationId <= 0) return response.status(400).json({ error: 'Choose a valid notification.' });
+  await pool.query('UPDATE market_notifications SET read_at=NOW() WHERE id=$1 AND user_id=$2 AND crop_id=$3', [notificationId,request.user.id,request.crop.id]);
   response.json({ ok: true });
 });
 
-app.get('/api/:cropId/listings', (request, response) => {
-  const rows = request.database.prepare('SELECT * FROM listings ORDER BY created_at DESC, id DESC').all();
-  response.json({ listings: rows.map((row) => publicListing(row, request.crop)) });
+const paymentLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many payment requests. Please wait before trying again.' },
+});
+const listingPostLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many listing attempts. Please try again later.' },
+});
+const DARAJA_BASE_URL = process.env.DARAJA_ENV === 'production'
+  ? 'https://api.safaricom.co.ke'
+  : 'https://sandbox.safaricom.co.ke';
+let cachedDarajaToken = null;
+let cachedDarajaTokenExpiresAt = 0;
+
+function darajaTimestamp() {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => part.value).join('');
+}
+
+async function darajaToken() {
+  if (cachedDarajaToken && Date.now() < cachedDarajaTokenExpiresAt) return cachedDarajaToken;
+  const { DARAJA_CONSUMER_KEY, DARAJA_CONSUMER_SECRET } = process.env;
+  if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) throw new Error('Daraja credentials are not configured.');
+  const authorization = Buffer.from(`${DARAJA_CONSUMER_KEY}:${DARAJA_CONSUMER_SECRET}`).toString('base64');
+  const response = await fetch(`${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${authorization}` }, signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) throw new Error(`Daraja OAuth returned ${response.status}.`);
+  const data = await response.json();
+  cachedDarajaToken = data.access_token;
+  cachedDarajaTokenExpiresAt = Date.now() + Math.max(0, Number(data.expires_in ?? 3599) - 60) * 1000;
+  return cachedDarajaToken;
+}
+
+function darajaCallbackUrl(request) {
+  const configured = process.env.DARAJA_CALLBACK_URL;
+  const deploymentHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  const origin = configured ? new URL(configured).origin : deploymentHost ? `https://${deploymentHost}` : `${request.protocol}://${request.get('host')}`;
+  const callbackUrl = configured ?? `${origin}/api/${request.crop.id}/payments/callback`;
+  const parsed = new URL(callbackUrl);
+  if (parsed.protocol !== 'https:' || !parsed.pathname.endsWith(`/api/${request.crop.id}/payments/callback`)) {
+    throw new Error('Configure an HTTPS Daraja callback URL for this crop marketplace.');
+  }
+  return parsed.toString();
+}
+
+async function initiateDaraja(payment, request) {
+  const shortcode = process.env.DARAJA_SHORTCODE;
+  const passkey = process.env.DARAJA_PASSKEY;
+  if (!shortcode || !passkey) throw new Error('Daraja shortcode and passkey are not configured.');
+  const timestamp = darajaTimestamp();
+  const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+  const token = await darajaToken();
+  const response = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(20000),
+    body: JSON.stringify({
+      BusinessShortCode: shortcode, Password: password, Timestamp: timestamp,
+      TransactionType: 'CustomerPayBillOnline', Amount: 500,
+      PartyA: payment.phone.slice(1), PartyB: shortcode, PhoneNumber: payment.phone.slice(1),
+      CallBackURL: darajaCallbackUrl(request),
+      AccountReference: payment.purpose === 'seller_listing_credit' ? 'SUGARCANEPOST' : `LAND${payment.listing_id}`.slice(0, 12),
+      TransactionDesc: payment.purpose === 'seller_listing_credit' ? 'Sugarcane listing credit' : 'Sugarcane land check',
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ResponseCode !== '0' || !data.CheckoutRequestID) {
+    throw new Error('Safaricom could not start the M-Pesa payment. Check the phone number and try again.');
+  }
+  await pool.query(`UPDATE market_payments SET status='pending',merchant_request_id=$1,checkout_request_id=$2,updated_at=NOW() WHERE id=$3`,
+    [data.MerchantRequestID,data.CheckoutRequestID,payment.id]);
+  return data.CheckoutRequestID;
+}
+
+async function queryDarajaPayment(checkoutRequestId) {
+  const shortcode = process.env.DARAJA_SHORTCODE;
+  const passkey = process.env.DARAJA_PASSKEY;
+  if (!shortcode || !passkey) throw new Error('Daraja shortcode and passkey are not configured.');
+  const timestamp = darajaTimestamp();
+  const token = await darajaToken();
+  const response = await fetch(`${DARAJA_BASE_URL}/mpesa/stkpushquery/v1/query`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(12000),
+    body: JSON.stringify({
+      BusinessShortCode: shortcode,
+      Password: Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64'),
+      Timestamp: timestamp, CheckoutRequestID: checkoutRequestId,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Safaricom payment query returned ${response.status}.`);
+  return data;
+}
+
+async function reconcileSuccessfulPayment(payment, callbackMetadata = null) {
+  if (callbackMetadata) {
+    const paidAmount = Number(callbackMetadata.Amount);
+    const paidPhone = callbackMetadata.PhoneNumber == null ? payment.phone.slice(1) : String(callbackMetadata.PhoneNumber);
+    if (paidAmount !== 500 || paidPhone !== payment.phone.slice(1)) return false;
+  }
+  const query = await queryDarajaPayment(payment.checkout_request_id);
+  if (query.ResponseCode !== '0' || String(query.ResultCode) !== '0') return false;
+  const receipt = callbackMetadata?.MpesaReceiptNumber ? String(callbackMetadata.MpesaReceiptNumber) : null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query('SELECT * FROM market_payments WHERE id=$1 AND crop_id=$2 FOR UPDATE', [payment.id,payment.crop_id]);
+    const current = locked.rows[0];
+    if (!current) { await client.query('ROLLBACK'); return false; }
+    if (current.status !== 'confirmed') {
+      await client.query(`UPDATE market_payments SET status='confirmed',mpesa_receipt=COALESCE($1,mpesa_receipt),result_code='0',result_description='Verified by Safaricom STK Query',confirmed_at=COALESCE(confirmed_at,NOW()),updated_at=NOW() WHERE id=$2`, [receipt,current.id]);
+      if (current.purpose === 'seller_listing_credit') {
+        await client.query('UPDATE market_users SET listing_credits=listing_credits+1 WHERE id=$1 AND crop_id=$2', [current.user_id,current.crop_id]);
+      } else {
+        await client.query(`INSERT INTO market_entitlements (crop_id,user_id,listing_id,payment_id) VALUES ($1,$2,$3,$4) ON CONFLICT (crop_id,user_id,listing_id) DO NOTHING`, [current.crop_id,current.user_id,current.listing_id,current.id]);
+      }
+    }
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.code === '23505' && receipt) return false;
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function publicPayment(row) {
+  return { id: Number(row.id), status: row.status, purpose: row.purpose, amountKes: row.amount_kes, checkoutRequestId: row.checkout_request_id };
+}
+
+app.post('/api/:cropId/payments', requireAuth, paymentLimiter, async (request, response) => {
+  const purpose = String(request.body?.purpose ?? '');
+  const listingId = Number(request.body?.listingId);
+  const phone = normalizePhone(request.body?.phone);
+  const idempotencyKey = String(request.body?.idempotencyKey ?? '');
+  if (!phone || !/^[\w-]{16,80}$/.test(idempotencyKey)) return response.status(400).json({ error: 'Enter a valid mobile number and retry the payment.' });
+  const accountResult = await pool.query('SELECT role,listing_credits FROM market_users WHERE id=$1 AND crop_id=$2', [request.user.id,request.crop.id]);
+  const account = accountResult.rows[0];
+  if (!account) return response.status(401).json({ error: 'Sign in with your phone number to continue.' });
+  if (purpose === 'seller_listing_credit' && (account.role !== 'seller' || account.listing_credits > 0)) {
+    return response.status(400).json({ error: account.role !== 'seller' ? 'Switch to seller mode to buy a listing credit.' : 'You already have a listing credit.' });
+  }
+  if (purpose === 'buyer_listing_reveal') {
+    if (account.role !== 'buyer' || !Number.isSafeInteger(listingId) || listingId <= 0) return response.status(400).json({ error: 'Choose a valid listing as a buyer.' });
+    const listing = await pool.query('SELECT owner_user_id FROM market_listings WHERE id=$1 AND crop_id=$2', [listingId,request.crop.id]);
+    if (!listing.rows[0]) return response.status(404).json({ error: 'This listing is no longer available.' });
+    if (String(listing.rows[0].owner_user_id) === String(request.user.id)) return response.status(403).json({ error: 'You cannot purchase access to your own listing.' });
+    const existing = await pool.query('SELECT id FROM market_entitlements WHERE crop_id=$1 AND user_id=$2 AND listing_id=$3', [request.crop.id,request.user.id,listingId]);
+    if (existing.rows.length) return response.json({ alreadyUnlocked: true });
+  } else if (purpose !== 'seller_listing_credit') {
+    return response.status(400).json({ error: 'Choose a valid payment type.' });
+  }
+  const client = await pool.connect();
+  let payment;
+  let reusedActivePayment = false;
+  try {
+    await client.query('BEGIN');
+    const paymentScope = `${request.crop.id}:${request.user.id}:${purpose}:${purpose === 'buyer_listing_reveal' ? listingId : 'credit'}`;
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [paymentScope]);
+    if (purpose === 'seller_listing_credit') {
+      const freshAccount = await client.query('SELECT listing_credits FROM market_users WHERE id=$1 AND crop_id=$2', [request.user.id,request.crop.id]);
+      if (freshAccount.rows[0]?.listing_credits > 0) {
+        await client.query('COMMIT');
+        return response.status(400).json({ error: 'You already have a listing credit.' });
+      }
+    } else {
+      const existingEntitlement = await client.query('SELECT id FROM market_entitlements WHERE crop_id=$1 AND user_id=$2 AND listing_id=$3', [request.crop.id,request.user.id,listingId]);
+      if (existingEntitlement.rows.length) {
+        await client.query('COMMIT');
+        return response.json({ alreadyUnlocked: true });
+      }
+    }
+    const active = await client.query(`
+      SELECT * FROM market_payments WHERE crop_id=$1 AND user_id=$2 AND purpose=$3
+        AND listing_id IS NOT DISTINCT FROM $4 AND status IN ('initiating','pending')
+        AND updated_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 1
+    `, [request.crop.id,request.user.id,purpose,purpose === 'buyer_listing_reveal' ? listingId : null]);
+    if (active.rows[0]) {
+      payment = active.rows[0];
+      reusedActivePayment = true;
+    } else {
+      const created = await client.query(`
+        INSERT INTO market_payments (crop_id,user_id,purpose,listing_id,amount_kes,phone,idempotency_key)
+        VALUES ($1,$2,$3,$4,500,$5,$6)
+        ON CONFLICT (user_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING *
+      `, [request.crop.id,request.user.id,purpose,purpose === 'buyer_listing_reveal' ? listingId : null,phone,idempotencyKey]);
+      payment = created.rows[0] ?? (await client.query('SELECT * FROM market_payments WHERE user_id=$1 AND idempotency_key=$2', [request.user.id,idempotencyKey])).rows[0];
+    }
+    if (!payment || payment.crop_id !== request.crop.id || payment.purpose !== purpose || String(payment.listing_id ?? '') !== String(purpose === 'buyer_listing_reveal' ? listingId : '')) {
+      await client.query('ROLLBACK');
+      return response.status(409).json({ error: 'This retry key was already used for a different payment.' });
+    }
+    if (reusedActivePayment && payment.phone !== phone) {
+      await client.query('ROLLBACK');
+      return response.status(409).json({ error: 'A payment request is already waiting for another number. Finish that prompt or try again after it expires.' });
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  if (payment.status === 'initiating' && !payment.checkout_request_id && !reusedActivePayment) {
+    try {
+      await initiateDaraja(payment, request);
+      payment = (await pool.query('SELECT * FROM market_payments WHERE id=$1', [payment.id])).rows[0];
+    } catch (error) {
+      await pool.query("UPDATE market_payments SET status='failed',result_description=$1,updated_at=NOW() WHERE id=$2 AND status='initiating'", [error.message.includes('credentials') || error.message.includes('Configure') ? error.message : 'Safaricom could not start the payment.',payment.id]);
+      if (error.message.includes('credentials') || error.message.includes('Configure')) return response.status(503).json({ error: error.message });
+      return response.status(502).json({ error: 'Safaricom could not start the M-Pesa payment. Please try again.' });
+    }
+  }
+  response.status(202).json({ payment: publicPayment(payment) });
 });
 
-app.post('/api/:cropId/listings', requireAuth, upload.single('image'), async (request, response) => {
-  if (request.user.role !== 'seller') return response.status(403).json({ error: 'Switch to seller mode to post a listing.' });
+app.post('/api/:cropId/payments/callback', async (request, response) => {
+  const callback = request.body?.Body?.stkCallback;
+  const checkoutRequestId = String(callback?.CheckoutRequestID ?? '');
+  if (!checkoutRequestId) return response.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  try {
+    const found = await pool.query('SELECT * FROM market_payments WHERE crop_id=$1 AND checkout_request_id=$2', [request.crop.id,checkoutRequestId]);
+    const payment = found.rows[0];
+    if (payment) {
+      if (String(callback.ResultCode) === '0') {
+        const items = callback.CallbackMetadata?.Item ?? [];
+        const metadata = Object.fromEntries(items.map((item) => [item.Name,item.Value]));
+        await reconcileSuccessfulPayment(payment, metadata);
+      } else {
+        const query = await queryDarajaPayment(payment.checkout_request_id);
+        if (query.ResponseCode === '0' && query.ResultCode != null && String(query.ResultCode) !== '0') {
+          await pool.query("UPDATE market_payments SET status='failed',result_code=$1,result_description=$2,updated_at=NOW() WHERE id=$3 AND status<>'confirmed'", [String(query.ResultCode),String(query.ResultDesc ?? callback.ResultDesc ?? 'Payment was not completed').slice(0,250),payment.id]);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Daraja callback reconciliation failed:', error.message);
+  }
+  response.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+});
 
+app.get('/api/:cropId/payments/:id', requireAuth, async (request, response) => {
+  const paymentId = Number(request.params.id);
+  if (!Number.isSafeInteger(paymentId) || paymentId <= 0) return response.status(400).json({ error: 'Choose a valid payment.' });
+  const result = await pool.query('SELECT * FROM market_payments WHERE id=$1 AND crop_id=$2 AND user_id=$3', [paymentId,request.crop.id,request.user.id]);
+  let payment = result.rows[0];
+  if (!payment) return response.status(404).json({ error: 'Payment was not found.' });
+  if (payment.checkout_request_id && ['pending','initiating'].includes(payment.status)) {
+    try {
+      const query = await queryDarajaPayment(payment.checkout_request_id);
+      if (query.ResponseCode === '0' && String(query.ResultCode) === '0') {
+        await reconcileSuccessfulPayment(payment);
+      } else if (query.ResponseCode === '0' && query.ResultCode != null && String(query.ResultCode) !== '0') {
+        await pool.query("UPDATE market_payments SET status='failed',result_code=$1,result_description=$2,updated_at=NOW() WHERE id=$3 AND status<>'confirmed'", [String(query.ResultCode),String(query.ResultDesc ?? 'Payment was not completed').slice(0,250),payment.id]);
+      }
+      payment = (await pool.query('SELECT * FROM market_payments WHERE id=$1 AND crop_id=$2 AND user_id=$3', [paymentId,request.crop.id,request.user.id])).rows[0];
+    } catch (error) {
+      console.error('Daraja status reconciliation failed:', error.message);
+    }
+  }
+  const credits = await pool.query('SELECT listing_credits FROM market_users WHERE id=$1 AND crop_id=$2', [request.user.id,request.crop.id]);
+  response.json({ payment: publicPayment(payment), listingCredits: credits.rows[0]?.listing_credits ?? 0 });
+});
+
+app.get('/api/:cropId/listings', async (request, response) => {
+  const result = await pool.query('SELECT * FROM market_listings WHERE crop_id=$1 ORDER BY created_at DESC,id DESC', [request.crop.id]);
+  response.json({ listings: result.rows.map((row) => publicListing(row, request.crop)) });
+});
+
+async function requireListingCredit(request, response, next) {
+  if (request.user.role !== 'seller') return response.status(403).json({ error: 'Switch to seller mode to post a listing.' });
+  const result = await pool.query('SELECT listing_credits FROM market_users WHERE id=$1 AND crop_id=$2', [request.user.id,request.crop.id]);
+  if (!result.rows[0] || result.rows[0].listing_credits < 1) return response.status(402).json({ error: 'A KSh 500 listing credit is required before publishing.' });
+  next();
+}
+
+app.post('/api/:cropId/listings', requireAuth, listingPostLimiter, requireListingCredit, upload.single('image'), async (request, response) => {
+  if (request.user.role !== 'seller') return response.status(403).json({ error: 'Switch to seller mode to post a listing.' });
   const body = request.body;
   const title = String(body.title ?? '').trim();
   const county = String(body.county ?? '').trim();
@@ -466,64 +709,72 @@ app.post('/api/:cropId/listings', requireAuth, upload.single('image'), async (re
   const longitude = body.longitude === '' || body.longitude == null ? null : Number(body.longitude);
 
   if (!request.file) return response.status(400).json({ error: 'Add a clear photo of the land or crop.' });
-  if (title.length < 5 || title.length > 100 || locality.length < 2 || locality.length > 80) {
-    return response.status(400).json({ error: 'Add a title and a valid town or area.' });
-  }
-  if (!counties.includes(county) || !Number.isFinite(acres) || acres <= 0 || acres > 100000) {
-    return response.status(400).json({ error: 'Check the county and acreage fields.' });
-  }
-  if (!Number.isSafeInteger(priceKes) || priceKes <= 0 || ![request.crop.standingLabel, 'Land for lease'].includes(kind)) {
-    return response.status(400).json({ error: 'Choose a listing type and enter a valid price in KSh.' });
-  }
-  if (cropVariety.length < 2 || cropVariety.length > 80 || expectedHarvest.length > 80 || description.length < 20 || description.length > 1000) {
-    return response.status(400).json({ error: 'Check the crop details and description.' });
-  }
+  if (title.length < 5 || title.length > 100 || locality.length < 2 || locality.length > 80) return response.status(400).json({ error: 'Add a title and a valid town or area.' });
+  if (!counties.includes(county) || !Number.isFinite(acres) || acres <= 0 || acres > 100000) return response.status(400).json({ error: 'Check the county and acreage fields.' });
+  if (!Number.isSafeInteger(priceKes) || priceKes <= 0 || ![request.crop.standingLabel, 'Land for lease'].includes(kind)) return response.status(400).json({ error: 'Choose a listing type and enter a valid price in KSh.' });
+  if (cropVariety.length < 2 || cropVariety.length > 80 || expectedHarvest.length > 80 || description.length < 20 || description.length > 1000) return response.status(400).json({ error: 'Check the crop details and description.' });
   const hasLatitude = latitude !== null;
   const hasLongitude = longitude !== null;
-  if (hasLatitude !== hasLongitude || (hasLatitude && (!Number.isFinite(latitude) || latitude < -4.8 || latitude > 5.2 || !Number.isFinite(longitude) || longitude < 33.8 || longitude > 42.2))) {
-    return response.status(400).json({ error: 'Choose a valid map location within Kenya.' });
-  }
+  if (hasLatitude !== hasLongitude || (hasLatitude && (!Number.isFinite(latitude) || latitude < -4.8 || latitude > 5.2 || !Number.isFinite(longitude) || longitude < 33.8 || longitude > 42.2))) return response.status(400).json({ error: 'Choose a valid map location within Kenya.' });
 
   const fileType = await fileTypeFromBuffer(request.file.buffer);
   const fileExtensions = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
   if (!fileType || !fileExtensions[fileType.mime]) return response.status(400).json({ error: 'Upload a valid JPG, PNG, or WebP image.' });
-  const cropUploadDir = path.join(uploadDir, request.crop.id);
-  fs.mkdirSync(cropUploadDir, { recursive: true });
   const filename = `${randomBytes(18).toString('hex')}${fileExtensions[fileType.mime]}`;
-  await fs.promises.writeFile(path.join(cropUploadDir, filename), request.file.buffer, { flag: 'wx' });
-  const imageUrl = `/uploads/${request.crop.id}/${filename}`;
-  const result = request.database.prepare(`
-    INSERT INTO listings (title, county, locality, acres, price_kes, kind, crop_variety, expected_harvest, description, image_url, owner_user_id, latitude, longitude)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, county, locality, acres, priceKes, kind, cropVariety, expectedHarvest, description, imageUrl, request.user.id, latitude, longitude);
-  const listing = request.database.prepare('SELECT * FROM listings WHERE id = ?').get(Number(result.lastInsertRowid));
-  request.database.prepare(`
-    INSERT OR IGNORE INTO notifications (user_id, listing_id, title, body)
-    SELECT id, ?, ?, ? FROM users
-    WHERE id <> ? AND listing_notifications_enabled = 1 AND profile_county = ?
-  `).run(
-    listing.id,
-    'New sugarcane listing in your county',
-    `${listing.title} · ${listing.locality}, ${listing.county}`,
-    request.user.id,
-    listing.county,
-  );
-  response.status(201).json({ listing: publicListing(listing, request.crop) });
+  const blob = await put(`listings/${request.crop.id}/${filename}`, request.file.buffer, {
+    access: 'public', contentType: fileType.mime, addRandomSuffix: false,
+  });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const credit = await client.query('UPDATE market_users SET listing_credits=listing_credits-1 WHERE id=$1 AND crop_id=$2 AND role=\'seller\' AND listing_credits>0 RETURNING listing_credits', [request.user.id,request.crop.id]);
+    if (!credit.rows[0]) {
+      await client.query('ROLLBACK');
+      await del(blob.url).catch(() => {});
+      return response.status(402).json({ error: 'A KSh 500 listing credit is required before publishing.' });
+    }
+    const inserted = await client.query(`
+      INSERT INTO market_listings (crop_id,title,county,locality,acres,price_kes,kind,crop_variety,expected_harvest,description,image_url,owner_user_id,latitude,longitude)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *
+    `, [request.crop.id,title,county,locality,acres,priceKes,kind,cropVariety,expectedHarvest,description,blob.url,request.user.id,latitude,longitude]);
+    const listing = inserted.rows[0];
+    await client.query(`
+      INSERT INTO market_notifications (crop_id,user_id,listing_id,title,body)
+      SELECT $1,id,$2,$3,$4 FROM market_users
+      WHERE crop_id=$1 AND id<>$5 AND listing_notifications_enabled=TRUE AND profile_county=$6
+      ON CONFLICT (user_id,listing_id) DO NOTHING
+    `, [request.crop.id,listing.id,'New sugarcane listing in your county',`${listing.title} · ${listing.locality}, ${listing.county}`,request.user.id,listing.county]);
+    await client.query('COMMIT');
+    response.status(201).json({ listing: publicListing(listing,request.crop), listingCredits: credit.rows[0].listing_credits });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    await del(blob.url).catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.all('/api/:cropId/listings', (_request, response) => {
   response.status(405).json({ error: 'This listing action is not supported.' });
 });
 
-app.get('/api/:cropId/listings/:id/contact', requireAuth, (request, response) => {
-  const listing = request.database.prepare(`
-    SELECT users.phone FROM listings
-    LEFT JOIN users ON users.id = listings.owner_user_id
-    WHERE listings.id = ?
-  `).get(Number(request.params.id));
+app.get('/api/:cropId/listings/:id/contact', requireAuth, async (request, response) => {
+  const listingId = Number(request.params.id);
+  if (!Number.isSafeInteger(listingId) || listingId <= 0) return response.status(400).json({ error: 'Choose a valid listing.' });
+  const result = await pool.query(`
+    SELECT l.id,l.owner_user_id,l.latitude,l.longitude,u.phone FROM market_listings l
+    LEFT JOIN market_users u ON u.id=l.owner_user_id AND u.crop_id=l.crop_id
+    WHERE l.id=$1 AND l.crop_id=$2
+  `, [listingId,request.crop.id]);
+  const listing = result.rows[0];
   if (!listing) return response.status(404).json({ error: 'This listing is no longer available.' });
   if (!listing.phone) return response.status(404).json({ error: 'This grower has not shared a phone number.' });
-  response.json({ phone: listing.phone });
+  if (request.user.role !== 'buyer') return response.status(403).json({ error: 'Switch to buyer mode to contact a grower.' });
+  if (String(listing.owner_user_id ?? '') === String(request.user.id)) return response.status(403).json({ error: 'You cannot buy access to your own listing.' });
+  const entitlement = await pool.query('SELECT id FROM market_entitlements WHERE crop_id=$1 AND user_id=$2 AND listing_id=$3', [request.crop.id,request.user.id,listingId]);
+  if (!entitlement.rows.length) return response.status(402).json({ error: 'A KSh 500 land-check payment is required to reveal the grower’s contact and location.', paymentRequired: true });
+  response.json({ phone: listing.phone, latitude: listing.latitude == null ? null : Number(listing.latitude), longitude: listing.longitude == null ? null : Number(listing.longitude) });
 });
 
 app.use((error, _request, response, _next) => {
