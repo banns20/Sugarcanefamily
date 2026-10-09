@@ -7,7 +7,6 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { fileTypeFromBuffer } from 'file-type';
 import multer from 'multer';
 import { rateLimit } from 'express-rate-limit';
-import { createServer as createViteServer } from 'vite';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,13 +28,6 @@ const counties = [
 const geocoderContact = process.env.GEOCODER_CONTACT ?? 'http://localhost:3000';
 const crops = [
   { id: 'sugarcane', name: 'Sugarcane', standingLabel: 'Standing sugarcane', fieldLabel: 'Sugarcane variety' },
-  { id: 'maize', name: 'Maize', standingLabel: 'Standing maize', fieldLabel: 'Maize variety' },
-  { id: 'beans', name: 'Beans', standingLabel: 'Standing beans', fieldLabel: 'Bean variety' },
-  { id: 'rice', name: 'Rice', standingLabel: 'Standing rice', fieldLabel: 'Rice variety' },
-  { id: 'potatoes', name: 'Potatoes', standingLabel: 'Standing potato crop', fieldLabel: 'Potato variety' },
-  { id: 'coffee', name: 'Coffee', standingLabel: 'Standing coffee', fieldLabel: 'Coffee variety' },
-  { id: 'tea', name: 'Tea', standingLabel: 'Standing tea', fieldLabel: 'Tea variety' },
-  { id: 'avocado', name: 'Avocado', standingLabel: 'Standing avocado', fieldLabel: 'Avocado variety' },
 ];
 const cropById = new Map(crops.map((crop) => [crop.id, crop]));
 const databases = new Map();
@@ -57,29 +49,6 @@ async function migrateLegacySugarcane() {
 }
 
 await migrateLegacySugarcane();
-
-const sampleListings = [
-  {
-    title: 'Mumias cane, ready to harvest', county: 'Kakamega', locality: 'Mumias West', acres: 4.5,
-    priceKes: 185000, kind: 'Standing sugarcane', cropVariety: 'NCo 334', expectedHarvest: 'Ready in 2 months',
-    description: 'Example only. Established crop with reliable access and a clear harvest window.', imageUrl: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=900&q=82',
-  },
-  {
-    title: 'Fertile acreage near the mill', county: 'Bungoma', locality: 'Webuye', acres: 6,
-    priceKes: 28000, kind: 'Land for lease', cropVariety: 'Suitable for sugarcane', expectedHarvest: 'Lease: 3 years',
-    description: 'Example only. Cleared, accessible land with a dependable water source nearby.', imageUrl: 'https://images.unsplash.com/photo-1470252649378-9c29740c9fa8?auto=format&fit=crop&w=900&q=82',
-  },
-  {
-    title: 'Healthy first ratoon crop', county: 'Busia', locality: 'Nambale', acres: 3.25,
-    priceKes: 152000, kind: 'Standing sugarcane', cropVariety: 'NCo 334', expectedHarvest: 'Ready in 5 months',
-    description: 'Example only. Even stand and good access for collection.', imageUrl: 'https://images.unsplash.com/photo-1499529112087-3cb3b73cec95?auto=format&fit=crop&w=900&q=82',
-  },
-  {
-    title: 'A fresh start for your next crop', county: 'Kisumu', locality: 'Muhoroni', acres: 8,
-    priceKes: 32000, kind: 'Land for lease', cropVariety: 'Suitable for sugarcane', expectedHarvest: 'Lease: 5 years',
-    description: 'Example only. Open plot with road access and room to plan a full growing cycle.', imageUrl: 'https://images.unsplash.com/photo-1464226184884-fa280b87c399?auto=format&fit=crop&w=900&q=82',
-  },
-];
 
 function ensureColumn(database, table, columnName, definition, migration) {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all();
@@ -134,18 +103,9 @@ function openCropDatabase(crop) {
   }
   ensureColumn(database, 'listings', 'latitude', 'latitude REAL');
   ensureColumn(database, 'listings', 'longitude', 'longitude REAL');
+  if (crop.id === 'sugarcane') database.prepare('DELETE FROM listings WHERE is_sample = 1').run();
   database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
 
-  if (crop.id === 'sugarcane' && database.prepare('SELECT COUNT(*) AS count FROM listings').get().count === 0) {
-    const insertSample = database.prepare(`
-      INSERT INTO listings (title, county, locality, acres, price_kes, kind, crop_variety, expected_harvest, description, image_url, is_sample)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-    `);
-    for (const listing of sampleListings) {
-      insertSample.run(listing.title, listing.county, listing.locality, listing.acres, listing.priceKes,
-        listing.kind, listing.cropVariety, listing.expectedHarvest, listing.description, listing.imageUrl);
-    }
-  }
   databases.set(crop.id, database);
 }
 
@@ -162,6 +122,7 @@ const upload = multer({
 app.set('view engine', 'ejs');
 app.set('views', path.join(dirname, 'views'));
 app.use(express.json({ limit: '16kb' }));
+app.use(express.static(path.join(dirname, 'public'), { maxAge: isProduction ? '1d' : 0 }));
 app.use('/uploads', express.static(uploadDir, { maxAge: '1d', immutable: true }));
 
 function digest(value) {
@@ -263,9 +224,10 @@ const locationLimiter = rateLimit({
 
 function locationFromResult(result) {
   const address = result.address ?? {};
-  const countyName = String(address.county ?? address.state_district ?? address.state ?? '')
-    .replace(/\s+County$/i, '').trim();
-  const county = counties.find((item) => item.toLowerCase() === countyName.toLowerCase()) ?? 'Other';
+  const countyNames = [address.county, address.state_district, address.state]
+    .filter(Boolean)
+    .map((name) => String(name).replace(/\s+County$/i, '').trim().toLowerCase());
+  const county = counties.find((item) => countyNames.includes(item.toLowerCase())) ?? 'Other';
   const locality = address.city ?? address.town ?? address.village ?? address.municipality
     ?? address.suburb ?? address.neighbourhood ?? String(result.display_name ?? '').split(',')[0];
   return {
@@ -318,7 +280,10 @@ app.get('/api/location/reverse', locationLimiter, async (request, response) => {
 });
 
 app.get('/api/crops', (_request, response) => {
-  response.json({ crops: crops.map(({ id, name, standingLabel, fieldLabel }) => ({ id, name, standingLabel, fieldLabel })) });
+  response.json({
+    crops: crops.map(({ id, name, standingLabel, fieldLabel }) => ({ id, name, standingLabel, fieldLabel })),
+    counties,
+  });
 });
 
 app.use('/api/:cropId', (request, response, next) => {
@@ -450,6 +415,10 @@ app.post('/api/:cropId/listings', requireAuth, upload.single('image'), async (re
   response.status(201).json({ listing: publicListing(listing, request.crop) });
 });
 
+app.all('/api/:cropId/listings', (_request, response) => {
+  response.status(405).json({ error: 'This listing action is not supported.' });
+});
+
 app.get('/api/:cropId/listings/:id/contact', requireAuth, (request, response) => {
   const listing = request.database.prepare(`
     SELECT users.phone FROM listings
@@ -462,10 +431,6 @@ app.get('/api/:cropId/listings/:id/contact', requireAuth, (request, response) =>
 });
 
 app.use((error, _request, response, _next) => {
-  if (error instanceof multer.MulterError) {
-    const message = error.code === 'LIMIT_FILE_SIZE' ? 'Choose a photo smaller than 6 MB.' : 'Upload one JPG, PNG, or WebP photo.';
-    return response.status(400).json({ error: message });
-  }
   if (error) {
     console.error(error);
     return response.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -473,28 +438,8 @@ app.use((error, _request, response, _next) => {
   return response.status(404).end();
 });
 
-if (isProduction) {
-  app.use('/assets', express.static(path.join(dirname, 'dist/client')));
-} else {
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'custom',
-  });
-  app.use(vite.middlewares);
-}
-
 app.get('*path', (_request, response) => {
-  let assets = { js: '/src/main.jsx', css: [] };
-  if (isProduction) {
-    const manifestPath = path.join(dirname, 'dist/client/.vite/manifest.json');
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    const entry = manifest['src/main.jsx'];
-    assets = {
-      js: `/assets/${entry.file}`,
-      css: (entry.css ?? []).map((file) => `/assets/${file}`),
-    };
-  }
-  response.render('index', { isProduction, assets });
+  response.render('index');
 });
 
 const port = Number(process.env.PORT ?? 3000);

@@ -1,0 +1,651 @@
+const root = document.querySelector("#root");
+const toastRoot = document.querySelector("#toast-root");
+const contextKey = "mavuno-market-context";
+const savedKey = "mavuno-saved-listings";
+const defaultCrops = [
+  { id: "sugarcane", name: "Sugarcane", standingLabel: "Standing sugarcane", fieldLabel: "Sugarcane variety" },
+];
+const icons = {
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  chevron: '<path d="m9 18 6-6-6-6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
+  leaf: '<path d="M20 4c-8 0-14 4-14 11a5 5 0 0 0 5 5c7 0 11-6 11-14V4ZM4 21c2-5 6-8 11-11"/>',
+  map: '<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+  sliders: '<path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  sparkle: '<path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2L12 3ZM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/>',
+  swap: '<path d="M16 3 20 7l-4 4M4 7h16M8 21l-4-4 4-4m12 4H4"/>',
+  x: '<path d="m18 6-12 12M6 6l12 12"/>',
+  help: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/>',
+};
+
+function icon(name, size = 16, extra = "") {
+  return `<svg ${extra} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || ""}</svg>`;
+}
+
+function readContext() {
+  try {
+    const context = JSON.parse(localStorage.getItem(contextKey));
+    if (
+      defaultCrops.some((crop) => crop.id === context?.crop) &&
+      ["buyer", "seller"].includes(context?.role)
+    ) return context;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function readSaved() {
+  try {
+    const value = JSON.parse(localStorage.getItem(savedKey));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+const savedContext = readContext();
+const state = {
+  market: savedContext || { crop: "sugarcane", role: "buyer" },
+  selectedCrop: savedContext?.crop || "sugarcane",
+  selectedRole: savedContext?.role || "buyer",
+  crops: defaultCrops,
+  counties: [],
+  listings: [],
+  user: null,
+  loading: true,
+  search: "",
+  place: "Everywhere",
+  deal: "All land",
+  sort: "Recommended",
+  minAcres: 0,
+  saved: readSaved(),
+  showSaved: false,
+  modal: savedContext ? null : { type: "onboarding" },
+  selected: null,
+  contactPhone: "",
+  authMode: "login",
+  toast: "",
+  listingKind: "Standing sugarcane",
+  mapPin: null,
+  postCounty: "",
+  postLocality: "",
+  locationResults: [],
+  locationLoading: false,
+};
+
+const cropInfo = () => state.crops.find((crop) => crop.id === state.market.crop) || defaultCrops[0];
+const cropTitle = () => cropInfo().name.toLowerCase();
+const savedForCrop = () => state.saved[state.market.crop] || [];
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[char]));
+const money = (amount) => `KSh ${Number(amount).toLocaleString("en-KE")}`;
+const imageUrl = (image) => image?.startsWith("http") ? image : image || "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=900&q=82";
+const countyOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>Choose county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === selected ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}`;
+
+async function request(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "The request could not be completed.");
+  return data;
+}
+
+function notify(message) {
+  state.toast = message;
+  renderToast();
+  clearTimeout(notify.timer);
+  notify.timer = setTimeout(() => {
+    state.toast = "";
+    renderToast();
+  }, 3200);
+}
+
+function renderToast() {
+  toastRoot.innerHTML = state.toast ? `<div class="toast"><span>${icon("check", 15)}</span>${escapeHtml(state.toast)}</div>` : "";
+}
+
+function filteredListings() {
+  const query = state.search.trim().toLowerCase();
+  return state.listings.filter((listing) => {
+    const matchesQuery = !query || `${listing.title} ${listing.district} ${listing.crop} ${listing.seller}`.toLowerCase().includes(query);
+    return matchesQuery &&
+      (state.place === "Everywhere" || listing.county === state.place) &&
+      (state.deal === "All land" || listing.kind === state.deal) &&
+      (!state.showSaved || savedForCrop().includes(listing.id)) &&
+      listing.acres >= state.minAcres;
+  }).sort((a, b) => state.sort === "Price: low to high" ? a.rate - b.rate : state.sort === "Most acres" ? b.acres - a.acres : 0);
+}
+
+function listingCard(listing) {
+  const saved = savedForCrop().includes(listing.id);
+  const isStanding = listing.kind === cropInfo().standingLabel;
+  return `<article class="listing-card">
+    <button class="listing-photo" data-action="details" data-id="${listing.id}" aria-label="View ${escapeHtml(listing.title)}">
+      <img src="${escapeHtml(imageUrl(listing.image))}" alt="${escapeHtml(`${listing.kind} in ${listing.locality}, ${listing.county}`)}" loading="lazy" />
+      <span class="deal-tag ${isStanding ? "deal-tag--harvest" : ""}">${escapeHtml(listing.kind)}</span>
+      <span class="photo-caption">${icon("sparkle", 13)} ${escapeHtml(listing.tag)}</span>
+    </button>
+    <button class="save-button ${saved ? "is-saved" : ""}" data-action="save" data-id="${listing.id}" aria-label="${saved ? "Remove from saved" : "Save listing"}" aria-pressed="${saved}">${icon("heart", 18, saved ? 'style="fill:currentColor"' : "")}</button>
+    <div class="listing-content">
+      <div class="listing-title-row"><h3>${escapeHtml(listing.title)}</h3><span class="posted-time">${escapeHtml(listing.posted)}</span></div>
+      <p class="listing-location">${icon("map", 14)} ${escapeHtml(listing.district)}</p>
+      <div class="listing-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres</span><span class="fact-divider"></span><span>${escapeHtml(listing.crop)}</span></div>
+      <div class="listing-footer"><div class="price-block"><strong>${money(listing.rate)}</strong><span>${isStanding ? " / acre · crop" : " / acre · year"}</span></div>
+        <button class="text-link" data-action="details" data-id="${listing.id}">Details ${icon("arrow", 15)}</button></div>
+      <div class="seller-line"><span class="seller-avatar">${listing.verified ? icon("check", 12) : icon("leaf", 12)}</span><span>${escapeHtml(listing.seller)}</span>${listing.verified ? `<span class="verified-mark" title="Mavuno member">${icon("check", 11)}</span><small>Member</small>` : ""}</div>
+    </div>
+  </article>`;
+}
+
+function renderMarket() {
+  const crop = cropInfo();
+  const listings = filteredListings();
+  const tabs = ["All land", crop.standingLabel, "Land for lease"];
+  return `<section class="market section-wrap" id="market">
+    <div class="section-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> ${escapeHtml(crop.name.toUpperCase())} MARKETPLACE</div>
+      <h2>Find your <em>patch.</em></h2><p>Browse ${escapeHtml(cropTitle())} already growing or land ready to plant.</p></div>
+      <div class="market-aside"><span class="live-dot"></span><strong>${state.listings.length} open listings</strong><span>for ${escapeHtml(cropTitle())}</span></div></div>
+    <div class="search-bar"><label class="search-input-wrap">${icon("search", 19)}<input data-field="search" value="${escapeHtml(state.search)}" placeholder="Try a town, county, or grower" aria-label="Search listings" /><kbd>⌘ K</kbd></label>
+      <label class="select-wrap">${icon("map", 17)}<select data-field="place" aria-label="Filter by county"><option>Everywhere</option>${state.counties.map((county) => `<option ${state.place === county ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}</select>${icon("down", 15)}</label>
+      <button class="filter-button" data-action="filters">${icon("sliders", 17)}<span>Filters</span></button></div>
+    <div class="market-controls"><div class="deal-tabs" role="tablist" aria-label="Listing type">${tabs.map((tab) => `<button role="tab" aria-selected="${state.deal === tab}" class="${state.deal === tab ? "tab-active" : ""}" data-action="deal" data-value="${escapeHtml(tab)}">${escapeHtml(tab)}<span>${tab === "All land" ? state.listings.length : state.listings.filter((listing) => listing.kind === tab).length}</span></button>`).join("")}</div>
+      <div class="sort-wrap">${icon("swap", 15)}<label for="sort-listings">Sort:</label><select id="sort-listings" data-field="sort"><option ${state.sort === "Recommended" ? "selected" : ""}>Recommended</option><option ${state.sort === "Price: low to high" ? "selected" : ""}>Price: low to high</option><option ${state.sort === "Most acres" ? "selected" : ""}>Most acres</option></select>${icon("down", 14)}</div></div>
+    ${state.showSaved ? `<div class="saved-banner">${icon("heart", 16)} Showing your saved listings<button data-action="all-listings">Show all land ${icon("arrow", 14)}</button></div>` : ""}
+    ${state.loading ? `<div class="empty-state"><span>${icon("leaf", 22)}</span><h3>Finding good ground...</h3><p>Loading the ${escapeHtml(cropTitle())} marketplace.</p></div>` :
+      listings.length ? `<div class="listing-grid">${listings.map(listingCard).join("")}</div>` :
+        `<div class="empty-state"><span>${icon("search", 22)}</span><h3>${state.listings.length ? "No listings match these filters" : "No land or standing sugarcane posted yet"}</h3><p>${state.listings.length ? "Try another county, listing type, or search." : "Check back soon for the first grower listing."}</p>${state.listings.length ? "" : state.market.role === "seller" ? `<button class="button button--green" data-action="post">${icon("plus", 16)} Post the first listing</button>` : `<button class="button button--green" data-action="context">Choose seller mode</button>`}</div>`}
+    <div class="browse-footer"><span>Showing <strong>${listings.length}</strong> of <strong>${state.listings.length}</strong> ${escapeHtml(cropTitle())} listings</span>
+      <button class="button button--outline" data-action="${state.market.role === "seller" ? "post" : "context"}">${state.market.role === "seller" ? "Have sugarcane to share? <strong>Post it here</strong>" : "Switch buyer or seller mode <strong>Choose</strong>"} ${icon("arrow", 16)}</button></div>
+  </section>`;
+}
+
+function renderPage() {
+  const crop = cropInfo();
+  const title = cropTitle();
+  const modal = renderModal();
+  return `<div class="app-shell">
+    <header class="topbar"><a class="brand" href="#top" aria-label="Mavuno Market home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">mavuno<span>market</span></span></a>
+      <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
+      <div class="top-actions"><button class="saved-nav ${state.showSaved ? "saved-nav--active" : ""}" data-action="toggle-saved">${icon("heart", 17)}<span>Saved</span>${savedForCrop().length ? `<b>${savedForCrop().length}</b>` : ""}</button>
+      ${state.user ? `<button class="account-nav" data-action="signout" title="Sign out">${escapeHtml(state.user.phone)}<span>Sign out</span></button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
+      ${state.market.role === "seller" ? `<button class="button button--green button--nav" data-action="post">${icon("plus", 17)} Post a listing</button>` : ""}
+      <button class="mobile-menu" data-action="menu" aria-label="Open menu">${icon("menu", 22)}</button></div></header>
+    <main id="top"><section class="hero"><div class="hero-image" role="img" aria-label="Sunlit Kenyan farmland"></div><div class="hero-content"><div class="eyebrow"><span class="eyebrow-line"></span> KENYA'S ${escapeHtml(crop.name.toUpperCase())} MARKETPLACE</div>
+      <h1>Good ground.<br><em>Good growing.</em></h1><p>Find ${escapeHtml(title)} already growing, or lease the right land to plant your next crop.</p>
+      <a class="hero-link" href="#market">Explore ${escapeHtml(title)} listings ${icon("arrow", 17)}</a></div>
+      <div class="hero-note"><span class="note-icon">${icon("leaf", 17)}</span><span><strong>Rooted in Kenya</strong><small>Made for local growers</small></span></div>
+      <div class="hero-count"><strong>${state.listings.length}</strong><span>${escapeHtml(title)} plots<br>ready to grow</span></div><span class="hero-sun sun-one"></span><span class="hero-sun sun-two"></span></section>
+    ${renderMarket()}
+    <section class="grower-strip" id="how-it-works"><div class="grower-strip-inner"><div class="grower-stamp">${icon("leaf", 27)}<span>GROW<br>TOGETHER</span></div>
+      <div><div class="eyebrow eyebrow--light"><span class="eyebrow-line"></span> A BETTER WAY TO GROW</div><h2>Land brings us<br><em>together.</em></h2></div>
+      <p>See the crop or land clearly, agree on terms directly, and connect with growers across Kenya.</p><a href="#market" class="strip-link">Find your next opportunity ${icon("arrow", 17)}</a></div>
+      <span class="strip-leaf leaf-a">${icon("leaf", 36)}</span><span class="strip-leaf leaf-b">${icon("leaf", 36)}</span></section>
+    <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:hello@mavunomarket.ke">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
+    <footer class="footer"><a class="brand brand--footer" href="#top"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">mavuno<span>market</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
+}
+
+function renderModal() {
+  if (!state.modal) return "";
+  const crop = cropInfo();
+  const backdrop = (contents, extra = "") => `<div class="modal-backdrop ${extra}" data-action="backdrop">${contents}</div>`;
+  const heading = (eyebrow, title, description = "") => `<div class="modal-heading"><div><span class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> ${eyebrow}</span><h2>${title}</h2>${description ? `<p>${description}</p>` : ""}</div><button class="close-button" data-action="close" aria-label="Close">${icon("x", 22)}</button></div>`;
+
+  if (state.modal.type === "onboarding") {
+    return backdrop(`<section class="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title"><div class="onboarding-mark">${icon("leaf", 20)}</div>
+      <span class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> YOUR LOCAL CROP MARKET</span><h2 id="onboarding-title">First, choose your <em>market.</em></h2>
+      <p class="onboarding-intro">Browse and post sugarcane listings, or contact growers directly.</p>
+      <span class="onboarding-label">How would you like to use this marketplace?</span><div class="role-choices">
+      <button class="role-choice ${state.selectedRole === "buyer" ? "role-choice--active" : ""}" data-action="role" data-value="buyer">${icon("search", 19)}<span><strong>Buyer</strong><small>Browse sugarcane and contact growers</small></span>${state.selectedRole === "buyer" ? icon("check", 16) : ""}</button>
+      <button class="role-choice ${state.selectedRole === "seller" ? "role-choice--active" : ""}" data-action="role" data-value="seller">${icon("plus", 19)}<span><strong>Seller</strong><small>Post sugarcane crops or land for lease</small></span>${state.selectedRole === "seller" ? icon("check", 16) : ""}</button></div>
+      <button class="button button--green onboarding-submit" data-action="confirm-context">Enter sugarcane market ${icon("arrow", 17)}</button>
+      <small class="onboarding-footnote">This marketplace is exclusively for sugarcane.</small></section>`, "onboarding-backdrop");
+  }
+
+  if (state.modal.type === "auth") {
+    const signup = state.authMode === "signup";
+    return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, `Create a ${state.market.role} account for the ${escapeHtml(crop.name.toLowerCase())} marketplace.`)}
+      <form class="auth-form" data-form="auth"><label>Kenyan mobile number<input name="phone" type="tel" autocomplete="tel" placeholder="0712 345 678" required></label>
+      <label>Password<input name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" minlength="8" maxlength="128" placeholder="At least 8 characters" required></label>
+      <button class="button button--green form-submit" type="submit">${signup ? "Create account" : "Sign in"} ${icon("arrow", 16)}</button></form>
+      <p class="auth-switch">${signup ? "Already have an account?" : "New to this crop market?"} <button data-action="toggle-auth">${signup ? "Sign in" : "Create an account"}</button></p>
+      <p class="form-footnote">${icon("help", 14)} Your account is separate from other crop marketplaces.</p></section>`);
+  }
+
+  if (state.modal.type === "post") {
+    const isStanding = state.listingKind === crop.standingLabel;
+    return backdrop(`<section class="modal post-modal" role="dialog" aria-modal="true" aria-labelledby="post-title">${heading("SUGARCANE SELLER", `Share your <em>sugarcane.</em>`, "Your account number is shared when a buyer requests contact.")}
+      <form class="listing-form" data-form="listing" enctype="multipart/form-data">
+      <label class="form-full">Listing title<input name="title" minlength="5" maxlength="100" placeholder="e.g. ${escapeHtml(crop.standingLabel)} near Mumias" required></label>
+      <div class="form-full listing-type-choice" role="radiogroup" aria-label="What are you listing?"><span class="choice-label">What are you offering?</span><div>
+        <label class="${isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="${escapeHtml(crop.standingLabel)}" ${isStanding ? "checked" : ""}>${icon("leaf", 16)}<span>${escapeHtml(crop.standingLabel)}<small>Crop already growing</small></span></label>
+        <label class="${!isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="Land for lease" ${!isStanding ? "checked" : ""}>${icon("map", 16)}<span>Land for lease<small>Land ready to plant</small></span></label></div></div>
+      <label>County<select name="county" data-field="county" required>${countyOptions(state.postCounty)}</select></label>
+      <label>Town or area<input name="locality" data-field="locality" value="${escapeHtml(state.postLocality)}" placeholder="Mumias West" minlength="2" maxlength="80" required></label>
+      <div class="form-full location-tools"><div class="location-actions"><button class="button button--outline location-search-button" type="button" data-action="search-location" ${state.locationLoading ? "disabled" : ""}>${icon("search", 15)} ${state.locationLoading ? "Finding location…" : "Find map location"}</button>
+        <button class="button button--outline device-location-button" type="button" data-action="device-location" ${state.locationLoading ? "disabled" : ""}>${icon("map", 15)} Use device location</button></div>
+        ${state.mapPin ? `<div class="map-pin-status">${icon("map", 14)} Pin set: ${escapeHtml(state.mapPin.displayName)}<button type="button" data-action="clear-pin" aria-label="Remove map pin">${icon("x", 14)}</button></div>` : ""}
+        ${state.locationResults.length ? `<div class="location-results" aria-label="Location search results">${state.locationResults.map((location, index) => `<button type="button" class="location-result" data-action="apply-location" data-index="${index}">${icon("map", 15)}<span>${escapeHtml(location.displayName)}</span><small>${escapeHtml(location.locality)}, ${escapeHtml(location.county)}</small></button>`).join("")}</div>` : ""}
+        <small class="location-privacy">A map pin is optional. Its exact position will be visible to buyers. Location lookup © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.</small>
+        <input type="hidden" name="latitude" value="${state.mapPin?.latitude ?? ""}"><input type="hidden" name="longitude" value="${state.mapPin?.longitude ?? ""}"></div>
+      <label>Available acres<input name="acres" type="number" min="0.25" step="0.25" placeholder="4.5" required></label>
+      <label>${isStanding ? "Crop price per acre (KSh)" : "Annual lease per acre (KSh)"}<input name="priceKes" type="number" min="1" step="1" placeholder="${isStanding ? "185000" : "28000"}" required></label>
+      <label>${escapeHtml(crop.fieldLabel)}<input name="cropVariety" placeholder="${escapeHtml(crop.name)}" minlength="2" maxlength="80" required></label>
+      <label>${isStanding ? "Expected harvest" : "Lease period"}<input name="expectedHarvest" placeholder="${isStanding ? "Ready in 3 months" : "3 years"}" maxlength="80"></label>
+      <label class="form-full">Describe what you're offering<textarea name="description" rows="3" minlength="20" maxlength="1000" placeholder="In your own words, describe the crop or land, its condition, access, and what a buyer should know." required></textarea></label>
+      <label class="form-full photo-input-label">Your land or crop photo<input name="image" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" required><small>JPG, PNG, or WebP · up to 6 MB</small></label>
+      <button class="button button--green form-submit" type="submit">Publish listing ${icon("arrow", 17)}</button></form>
+      <p class="form-footnote">${icon("help", 14)} Use a photo you have the right to share. Your number stays private until a buyer requests it.</p></section>`);
+  }
+
+  if (state.modal.type === "details" && state.selected) {
+    const listing = state.selected;
+    const isPinned = listing.latitude != null && listing.longitude != null;
+    const mapUrl = isPinned ? `https://www.openstreetmap.org/?mlat=${listing.latitude}&mlon=${listing.longitude}#map=15/${listing.latitude}/${listing.longitude}` : `https://www.openstreetmap.org/search?query=${encodeURIComponent(listing.district)}`;
+    return backdrop(`<section class="modal details-modal" role="dialog" aria-modal="true" aria-labelledby="details-title"><button class="close-button details-close" data-action="close" aria-label="Close">${icon("x", 22)}</button>
+      <img class="details-image" src="${escapeHtml(imageUrl(listing.image))}" alt="${escapeHtml(`${listing.kind} in ${listing.locality}`)}"><div class="details-content">
+      <span class="deal-tag details-deal ${listing.kind === crop.standingLabel ? "deal-tag--harvest" : ""}">${escapeHtml(listing.kind)}</span><h2 id="details-title">${escapeHtml(listing.title)}</h2>
+      <p class="listing-location">${icon("map", 15)} ${escapeHtml(listing.district)}</p><div class="details-price">${money(listing.rate)} <small>${listing.kind === crop.standingLabel ? "/ acre · crop" : "/ acre · year"}</small></div>
+      <div class="details-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres available</span><span>${escapeHtml(listing.crop)}</span><span>${escapeHtml(listing.description || "Contact the grower for more details.")}</span></div>
+      <a class="map-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">${icon("map", 15)} ${isPinned ? "Open pinned location" : "View area on map"} ${icon("arrow", 14)}</a>
+      <div class="contact-grower"><span class="seller-avatar">${icon("leaf", 13)}</span><span><strong>${escapeHtml(listing.seller)}</strong><small>${listing.verified ? "Mavuno member" : "Example listing"}</small></span>
+      ${state.contactPhone ? `<a class="button button--green" href="tel:${escapeHtml(state.contactPhone)}">Call ${escapeHtml(state.contactPhone)}</a>` : `<button class="button button--green" data-action="contact">Contact seller ${icon("arrow", 16)}</button>`}</div></div></section>`);
+  }
+
+  if (state.modal.type === "filters") {
+    return backdrop(`<section class="modal filter-modal" role="dialog" aria-modal="true" aria-labelledby="filter-title">${heading("MAKE IT YOURS", 'More <em>filters.</em>')}
+      <label class="filter-check"><input type="checkbox" data-field="show-saved" ${state.showSaved ? "checked" : ""}> Only show my saved listings ${icon("heart", 16)}</label>
+      <label class="filter-check"><span>Minimum acres</span><input class="mini-number" data-field="min-acres" type="number" min="0" step="1" placeholder="Any" value="${state.minAcres || ""}"></label>
+      <p class="filter-hint">Choose a county and listing type from the marketplace controls to narrow the results.</p>
+      <button class="button button--green form-submit" data-action="close">Show ${filteredListings().length} listings ${icon("arrow", 16)}</button></section>`);
+  }
+
+  if (state.modal.type === "menu") {
+    return backdrop(`<section class="modal mobile-nav-modal"><button class="close-button" data-action="close" aria-label="Close">${icon("x", 22)}</button>
+      <a href="#market" data-action="close">Marketplace ${icon("chevron", 17)}</a><a href="#how-it-works" data-action="close">How it works ${icon("chevron", 17)}</a>
+      <button class="mobile-context-action" data-action="context">${escapeHtml(crop.name)} · ${escapeHtml(state.market.role)} ${icon("down", 15)}</button>
+      <button class="mobile-context-action" data-action="${state.user ? "signout" : "login"}">${state.user ? "Sign out" : "Sign in"} ${icon("chevron", 15)}</button>
+      ${state.market.role === "seller" ? `<button class="button button--green" data-action="post">${icon("plus", 16)} Post a listing</button>` : ""}</section>`);
+  }
+  return "";
+}
+
+function render() {
+  const active = document.activeElement;
+  const focusName = active?.getAttribute("data-field") || active?.name;
+  const selectionStart = active && typeof active.selectionStart === "number" ? active.selectionStart : null;
+  const formData = new Map();
+  root.querySelectorAll("form").forEach((form) => {
+    if (!form.dataset.form) return;
+    formData.set(form.dataset.form, Array.from(new FormData(form).entries()).filter(([key, value]) => key !== "image" && typeof value === "string"));
+  });
+  root.innerHTML = renderPage();
+  for (const [formName, entries] of formData) {
+    const form = root.querySelector(`[data-form="${formName}"]`);
+    if (!form) continue;
+    for (const [name, value] of entries) {
+      const field = form.elements.namedItem(name);
+      if (!field || field.type === "file" || field.type === "radio" || ["county", "locality", "latitude", "longitude"].includes(name)) continue;
+      field.value = value;
+    }
+  }
+  if (focusName) {
+    const target = root.querySelector(`[data-field="${focusName}"], [name="${focusName}"]`);
+    if (target) {
+      target.focus({ preventScroll: true });
+      if (selectionStart !== null && target.setSelectionRange) target.setSelectionRange(selectionStart, selectionStart);
+    }
+  }
+  renderToast();
+}
+
+async function loadMarket() {
+  state.loading = true;
+  render();
+  try {
+    const [marketData, listingsData, sessionData] = await Promise.all([
+      request("/api/crops"),
+      request(`/api/${state.market.crop}/listings`),
+      request(`/api/${state.market.crop}/auth/session`),
+    ]);
+    state.crops = marketData.crops || defaultCrops;
+    state.counties = marketData.counties || [];
+    state.listings = listingsData.listings || [];
+    state.user = sessionData.user || null;
+  } catch (error) {
+    notify(`Could not connect to this crop marketplace. ${error.message}`);
+  } finally {
+    state.loading = false;
+    render();
+  }
+}
+
+function setModal(type, extra = {}) {
+  state.modal = { type, ...extra };
+  render();
+}
+
+function openPost() {
+  if (state.market.role !== "seller") {
+    state.selectedRole = "seller";
+    setModal("onboarding", { afterChoice: "post" });
+  } else if (!state.user) {
+    state.authMode = "signup";
+    setModal("auth", { afterLogin: "post" });
+  } else {
+    state.listingKind = cropInfo().standingLabel;
+    state.mapPin = null;
+    state.postCounty = "";
+    state.postLocality = "";
+    state.locationResults = [];
+    setModal("post");
+  }
+}
+
+async function confirmContext() {
+  const next = { crop: state.selectedCrop, role: state.selectedRole };
+  if (state.user && next.crop === state.market.crop && state.user.role !== next.role) {
+    try {
+      const data = await request(`/api/${state.market.crop}/auth/role`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: next.role }),
+      });
+      state.user = data.user;
+    } catch (error) {
+      notify(error.message);
+      return;
+    }
+  }
+  const previousCrop = state.market.crop;
+  localStorage.setItem(contextKey, JSON.stringify(next));
+  state.market = next;
+  state.search = "";
+  state.place = "Everywhere";
+  state.deal = "All land";
+  state.showSaved = false;
+  state.minAcres = 0;
+  if (next.crop !== previousCrop) state.user = null;
+  if (state.modal.afterChoice === "post") {
+    if (state.user && next.crop === previousCrop) {
+      state.listingKind = cropInfo().standingLabel;
+      setModal("post");
+    } else {
+      state.authMode = "signup";
+      setModal("auth", { afterLogin: "post" });
+    }
+  } else if (state.modal.afterChoice === "auth") {
+    state.authMode = "signup";
+    setModal("auth");
+  } else {
+    state.modal = null;
+    render();
+  }
+  if (next.crop !== previousCrop) loadMarket();
+}
+
+async function submitAuth(form) {
+  const formData = new FormData(form);
+  try {
+    const data = await request(`/api/${state.market.crop}/auth/${state.authMode}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: formData.get("phone"), password: formData.get("password"), ...(state.authMode === "signup" ? { role: state.market.role } : {}) }),
+    });
+    let user = data.user;
+    if (user.role !== state.market.role) {
+      const roleData = await request(`/api/${state.market.crop}/auth/role`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: state.market.role }),
+      });
+      user = roleData.user;
+    }
+    state.user = user;
+    const afterLogin = state.modal.afterLogin;
+    state.modal = afterLogin === "post" && user.role === "seller" ? { type: "post" } : null;
+    render();
+    if (afterLogin === "contact" && state.selected) await contactGrower();
+    else notify(state.authMode === "signup" ? "Your crop marketplace account is ready." : "Welcome back.");
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function submitListing(form) {
+  const formData = new FormData(form);
+  formData.set("kind", state.listingKind);
+  try {
+    const data = await request(`/api/${state.market.crop}/listings`, { method: "POST", body: formData });
+    state.listings.unshift(data.listing);
+    state.place = "Everywhere";
+    state.deal = "All land";
+    state.search = "";
+    state.showSaved = false;
+    state.minAcres = 0;
+    state.sort = "Recommended";
+    state.modal = null;
+    state.mapPin = null;
+    state.locationResults = [];
+    render();
+    notify(`Your sugarcane listing is live.`);
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function signOut() {
+  try {
+    await request(`/api/${state.market.crop}/auth/logout`, { method: "POST" });
+    state.user = null;
+    state.modal = null;
+    render();
+    notify("You are signed out.");
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function toggleSaved(id) {
+  const current = savedForCrop();
+  state.saved[state.market.crop] = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+  localStorage.setItem(savedKey, JSON.stringify(state.saved));
+  render();
+}
+
+function openListing(id) {
+  state.selected = state.listings.find((listing) => listing.id === Number(id)) || null;
+  state.contactPhone = "";
+  setModal("details");
+}
+
+async function contactGrower() {
+  if (!state.user) {
+    state.authMode = "login";
+    setModal("auth", { afterLogin: "contact" });
+    return;
+  }
+  try {
+    const data = await request(`/api/${state.market.crop}/listings/${state.selected.id}/contact`);
+    state.contactPhone = data.phone;
+    render();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function applyLocation(location) {
+  state.postCounty = location.county;
+  state.postLocality = location.locality;
+  state.mapPin = location;
+  state.locationResults = [];
+  render();
+  notify(`Map pin set near ${location.locality}, ${location.county}.`);
+}
+
+async function searchLocation() {
+  if (state.postLocality.trim().length < 3) {
+    notify("Enter a town or area first, then search for its map location.");
+    return;
+  }
+  state.locationLoading = true;
+  render();
+  try {
+    const query = [state.postLocality.trim(), state.postCounty, "Kenya"].filter(Boolean).join(", ");
+    const data = await request(`/api/location/search?q=${encodeURIComponent(query)}`);
+    state.locationResults = data.results || [];
+    if (!state.locationResults.length) notify("No matching Kenyan locations found. You can still post without a map pin.");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    state.locationLoading = false;
+    render();
+  }
+}
+
+function useDeviceLocation() {
+  if (!navigator.geolocation) {
+    notify("Device location is not available in this browser. Search by town or area instead.");
+    return;
+  }
+  state.locationLoading = true;
+  render();
+  navigator.geolocation.getCurrentPosition(async ({ coords }) => {
+    try {
+      const data = await request(`/api/location/reverse?lat=${encodeURIComponent(coords.latitude)}&lon=${encodeURIComponent(coords.longitude)}`);
+      applyLocation(data.location);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      state.locationLoading = false;
+      render();
+    }
+  }, (error) => {
+    state.locationLoading = false;
+    render();
+    notify(error.code === error.PERMISSION_DENIED ? "Allow location access, or search by town or area instead." : "Could not get device location. Search by town or area instead.");
+  }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+}
+
+root.addEventListener("click", async (event) => {
+  const control = event.target.closest("[data-action]");
+  if (!control) return;
+  const action = control.dataset.action;
+  if (action === "backdrop") {
+    if (event.target === control && control.classList.contains("modal-backdrop") && !control.classList.contains("onboarding-backdrop")) {
+      state.modal = null;
+      render();
+    }
+  } else if (action === "close") {
+    state.modal = null;
+    render();
+  } else if (action === "context") {
+    state.selectedCrop = state.market.crop;
+    state.selectedRole = state.market.role;
+    setModal("onboarding");
+  } else if (action === "role") {
+    state.selectedRole = control.dataset.value;
+    render();
+  } else if (action === "confirm-context") {
+    await confirmContext();
+  } else if (action === "post") {
+    openPost();
+  } else if (action === "login") {
+    state.authMode = "login";
+    setModal("auth");
+  } else if (action === "toggle-auth") {
+    state.authMode = state.authMode === "signup" ? "login" : "signup";
+    render();
+  } else if (action === "signout") {
+    await signOut();
+  } else if (action === "toggle-saved") {
+    state.showSaved = !state.showSaved;
+    state.deal = "All land";
+    render();
+  } else if (action === "all-listings") {
+    state.showSaved = false;
+    render();
+  } else if (action === "save") {
+    toggleSaved(Number(control.dataset.id));
+  } else if (action === "details") {
+    openListing(control.dataset.id);
+  } else if (action === "deal") {
+    state.deal = control.dataset.value;
+    render();
+  } else if (action === "filters") {
+    setModal("filters");
+  } else if (action === "menu") {
+    setModal("menu");
+  } else if (action === "contact") {
+    await contactGrower();
+  } else if (action === "search-location") {
+    await searchLocation();
+  } else if (action === "device-location") {
+    useDeviceLocation();
+  } else if (action === "apply-location") {
+    applyLocation(state.locationResults[Number(control.dataset.index)]);
+  } else if (action === "clear-pin") {
+    state.mapPin = null;
+    render();
+  }
+});
+
+root.addEventListener("input", (event) => {
+  const field = event.target.dataset.field;
+  if (field === "search") state.search = event.target.value;
+  if (field === "min-acres") state.minAcres = Number(event.target.value) || 0;
+  if (field === "locality") {
+    state.postLocality = event.target.value;
+    state.mapPin = null;
+    state.locationResults = [];
+    render();
+  }
+  if (field === "min-acres" || field === "search") render();
+});
+
+root.addEventListener("change", (event) => {
+  const field = event.target.dataset.field;
+  if (field === "selected-crop") {
+    state.selectedCrop = event.target.value;
+    render();
+  }
+  if (field === "show-saved") {
+    state.showSaved = event.target.checked;
+    render();
+  } else if (field === "place") {
+    state.place = event.target.value;
+    render();
+  } else if (field === "sort") {
+    state.sort = event.target.value;
+    render();
+  } else if (field === "county") {
+    state.postCounty = event.target.value;
+    state.mapPin = null;
+    state.locationResults = [];
+    render();
+  } else if (event.target.name === "kind") {
+    state.listingKind = event.target.value;
+    render();
+  }
+});
+
+root.addEventListener("submit", async (event) => {
+  const form = event.target.closest("form[data-form]");
+  if (!form) return;
+  event.preventDefault();
+  if (form.dataset.form === "auth") await submitAuth(form);
+  if (form.dataset.form === "listing") await submitListing(form);
+});
+
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    root.querySelector('[data-field="search"]')?.focus();
+  }
+  if (event.key === "Escape" && state.modal && state.modal.type !== "onboarding") {
+    state.modal = null;
+    render();
+  }
+});
+
+loadMarket();
