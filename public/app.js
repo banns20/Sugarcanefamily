@@ -116,6 +116,8 @@ const state = {
   postLocality: "",
   locationResults: [],
   locationLoading: false,
+  locationMap: null,
+  locationMarker: null,
 };
 
 const cropInfo = () => state.crops.find((crop) => crop.id === state.market.crop) || defaultCrops[0];
@@ -284,11 +286,13 @@ function renderModal() {
         <label class="${!isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="Land for lease" ${!isStanding ? "checked" : ""}>${icon("map", 16)}<span>Land for lease<small>Land ready to plant</small></span></label></div></div>
       <label>County<select name="county" data-field="county" required>${countyOptions(state.postCounty)}</select></label>
       <label>Town or area<input name="locality" data-field="locality" value="${escapeHtml(state.postLocality)}" placeholder="Mumias West" minlength="2" maxlength="80" required></label>
-      <div class="form-full location-tools"><div class="location-actions"><button class="button button--outline location-search-button" type="button" data-action="search-location" ${state.locationLoading ? "disabled" : ""}>${icon("search", 15)} ${state.locationLoading ? "Finding location…" : "Find map location"}</button>
-        <button class="button button--outline device-location-button" type="button" data-action="device-location" ${state.locationLoading ? "disabled" : ""}>${icon("map", 15)} Use device location</button></div>
-        ${state.mapPin ? `<div class="map-pin-status">${icon("map", 14)} Pin set: ${escapeHtml(state.mapPin.displayName)}<button type="button" data-action="clear-pin" aria-label="Remove map pin">${icon("x", 14)}</button></div>` : ""}
+      <div class="form-full location-tools"><div class="location-picker-heading"><span class="choice-label">Pin the field on the map <span class="optional-label">Optional</span></span><small>Search for an area, use your device, or tap the map to place a pin.</small></div>
+        <div class="location-actions"><button class="button button--outline location-search-button" type="button" data-action="search-location" ${state.locationLoading ? "disabled" : ""}>${icon("search", 15)} ${state.locationLoading ? "Finding location…" : "Find town on map"}</button>
+          <button class="button button--outline device-location-button" type="button" data-action="device-location" ${state.locationLoading ? "disabled" : ""}>${icon("map", 15)} Use device location</button></div>
         ${state.locationResults.length ? `<div class="location-results" aria-label="Location search results">${state.locationResults.map((location, index) => `<button type="button" class="location-result" data-action="apply-location" data-index="${index}">${icon("map", 15)}<span>${escapeHtml(location.displayName)}</span><small>${escapeHtml(location.locality)}, ${escapeHtml(location.county)}</small></button>`).join("")}</div>` : ""}
-        <small class="location-privacy">A map pin is optional. Its exact position will be visible to buyers. Location lookup © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.</small>
+        <div class="location-map-wrap"><div id="listing-location-map" class="location-map" role="application" aria-label="Map of Kenya. Tap to select the listing location."></div><span class="location-map-hint">${state.locationLoading ? "Finding the selected place…" : state.mapPin ? "Tap again to move your pin" : "Tap the map to drop a pin"}</span></div>
+        ${state.mapPin ? `<div class="map-pin-status">${icon("map", 14)} <span><strong>Location pinned</strong><small>${escapeHtml(state.mapPin.displayName || `${state.mapPin.latitude.toFixed(4)}, ${state.mapPin.longitude.toFixed(4)}`)}</small></span><button type="button" data-action="clear-pin" aria-label="Remove map pin">${icon("x", 14)}</button></div>` : ""}
+        <small class="location-privacy">The pin is visible to anyone viewing your listing. Leave it unset if you prefer to share only the town. Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.</small>
         <input type="hidden" name="latitude" value="${state.mapPin?.latitude ?? ""}"><input type="hidden" name="longitude" value="${state.mapPin?.longitude ?? ""}"></div>
       <label>Available acres<input name="acres" type="number" min="0.25" step="0.25" placeholder="4.5" required></label>
       <label>${isStanding ? "Crop price per acre (KSh)" : "Annual lease per acre (KSh)"}<input name="priceKes" type="number" min="1" step="1" placeholder="${isStanding ? "185000" : "28000"}" required></label>
@@ -331,11 +335,18 @@ function renderModal() {
   }
   if (state.modal.type === "profile") {
     const user = state.user;
-    return backdrop(`<section class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">${heading("YOUR ACCOUNT", "Your <em>profile.</em>", "Tell the sugarcane community a little about yourself.")}<div class="profile-account"><span class="profile-avatar">${icon("leaf", 20)}</span><span><strong>${escapeHtml(user.displayName || "Grower profile")}</strong><small>${escapeHtml(user.phone)} · ${escapeHtml(user.role)}</small></span></div>
-      <form class="profile-form" data-form="profile"><label>Display name<input name="displayName" value="${escapeHtml(user.displayName)}" minlength="2" maxlength="60" placeholder="Your name" required></label>
-      <label>County <span class="optional-label">Optional</span><select name="county"><option value="">Choose a county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === user.county ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}</select></label>
-      <label>Your introduction <span class="optional-label">Optional</span><textarea name="bio" rows="4" maxlength="500" placeholder="Share what you grow or what you are looking for.">${escapeHtml(user.bio)}</textarea></label>
-      <button class="button button--green form-submit" type="submit">Save profile ${icon("arrow", 16)}</button></form></section>`);
+    const initials = (user.displayName || "Grower").trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("");
+    const roleLabel = user.role === "seller" ? "Sugarcane seller" : "Sugarcane buyer";
+    return backdrop(`<section class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+      ${heading("YOUR ACCOUNT", "Your <em>profile.</em>", "A clear profile helps local growers know who they’re connecting with.")}
+      <div class="profile-summary"><span class="profile-avatar">${escapeHtml(initials)}</span><span class="profile-summary-copy"><strong>${escapeHtml(user.displayName || "Add your name")}</strong><small>${escapeHtml(user.phone)}</small></span><span class="profile-role">${icon(user.role === "seller" ? "leaf" : "search", 13)}${roleLabel}</span></div>
+      <form class="profile-form" data-form="profile">
+        <div class="profile-fields"><label>Your name<input name="displayName" value="${escapeHtml(user.displayName)}" minlength="2" maxlength="60" autocomplete="name" placeholder="e.g. Amina Wanjiru" required></label>
+        <label>Your county <span class="optional-label">Optional</span><select name="county"><option value="">Choose a county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === user.county ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}</select></label></div>
+        <label>About you <span class="optional-label">Optional</span><textarea name="bio" rows="4" maxlength="500" placeholder="Tell people what you grow, where you work, or what you’re looking for.">${escapeHtml(user.bio)}</textarea><small class="profile-hint">Keep it simple—your experience, area, or what kind of sugarcane connection you need.</small></label>
+        <div class="profile-contact-note">${icon("help", 15)}<span><strong>Your number isn’t shown on your public profile.</strong><small>It’s shared through listing contact when someone requests it.</small></span></div>
+        <button class="button button--green form-submit" type="submit">Save profile ${icon("arrow", 16)}</button>
+      </form></section>`);
   }
   if (state.modal.type === "article") {
     const article = fieldArticles.find((item) => item.id === state.modal.articleId);
@@ -352,6 +363,11 @@ function render() {
   const focusName = active?.getAttribute("data-field") || active?.name;
   const selectionStart = active && typeof active.selectionStart === "number" ? active.selectionStart : null;
   const formData = new Map();
+  if (state.locationMap) {
+    state.locationMap.remove();
+    state.locationMap = null;
+    state.locationMarker = null;
+  }
   root.querySelectorAll("form").forEach((form) => {
     if (!form.dataset.form) return;
     formData.set(form.dataset.form, Array.from(new FormData(form).entries()).filter(([key, value]) => key !== "image" && typeof value === "string"));
@@ -373,6 +389,7 @@ function render() {
       if (selectionStart !== null && target.setSelectionRange) target.setSelectionRange(selectionStart, selectionStart);
     }
   }
+  initializeLocationMap();
   renderToast();
 }
 
@@ -573,7 +590,51 @@ async function contactGrower() {
   }
 }
 
+function initializeLocationMap() {
+  const element = document.querySelector("#listing-location-map");
+  if (!element || !window.L) return;
+  const pinned = state.mapPin && Number.isFinite(Number(state.mapPin.latitude)) && Number.isFinite(Number(state.mapPin.longitude));
+  const center = pinned ? [Number(state.mapPin.latitude), Number(state.mapPin.longitude)] : [-0.65, 37.9];
+  const map = window.L.map(element, {
+    maxBounds: [[-4.8, 33.8], [5.2, 42.2]],
+    maxBoundsViscosity: 0.85,
+    scrollWheelZoom: false,
+  }).setView(center, pinned ? 13 : 6);
+  window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
+  }).addTo(map);
+  state.locationMap = map;
+  if (pinned) state.locationMarker = window.L.marker(center).addTo(map);
+  map.on("click", (event) => selectMapPoint(event.latlng));
+  requestAnimationFrame(() => map.invalidateSize());
+}
+
+async function selectMapPoint(point) {
+  if (state.locationLoading) return;
+  const latitude = Number(point.lat.toFixed(6));
+  const longitude = Number(point.lng.toFixed(6));
+  state.locationLoading = true;
+  state.mapPin = { latitude, longitude, displayName: "Finding nearby place…" };
+  render();
+  try {
+    const data = await request(`/api/location/reverse?lat=${encodeURIComponent(latitude)}&lon=${encodeURIComponent(longitude)}`);
+    state.postCounty = data.location.county;
+    state.postLocality = data.location.locality;
+    state.mapPin = data.location;
+    state.locationResults = [];
+    notify(`Map pin set near ${data.location.locality}, ${data.location.county}.`);
+  } catch (error) {
+    state.mapPin.displayName = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+    notify(`${error.message} Your pin is saved; enter the county and town manually.`);
+  } finally {
+    state.locationLoading = false;
+    render();
+  }
+}
+
 function applyLocation(location) {
+  if (!location) return;
   state.postCounty = location.county;
   state.postLocality = location.locality;
   state.mapPin = location;
@@ -701,7 +762,17 @@ root.addEventListener("input", (event) => {
     state.postLocality = event.target.value;
     state.mapPin = null;
     state.locationResults = [];
-    render();
+    if (state.locationMarker && state.locationMap) state.locationMap.removeLayer(state.locationMarker);
+    state.locationMarker = null;
+    root.querySelector(".map-pin-status")?.remove();
+    root.querySelector(".location-results")?.remove();
+    const form = root.querySelector('[data-form="listing"]');
+    if (form) {
+      form.elements.namedItem("latitude").value = "";
+      form.elements.namedItem("longitude").value = "";
+    }
+    const hint = root.querySelector(".location-map-hint");
+    if (hint) hint.textContent = "Tap the map to drop a pin";
   }
   if (field === "min-acres" || field === "search") render();
 });

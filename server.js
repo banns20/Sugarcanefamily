@@ -131,6 +131,7 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(dirname, 'views'));
 app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(dirname, 'public'), { maxAge: isProduction ? '1d' : 0 }));
+app.use('/vendor/leaflet', express.static(path.join(dirname, 'node_modules/leaflet/dist'), { maxAge: isProduction ? '1d' : 0 }));
 app.use('/uploads', express.static(uploadDir, { maxAge: '1d', immutable: true }));
 
 function digest(value) {
