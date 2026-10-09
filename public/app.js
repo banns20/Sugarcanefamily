@@ -60,6 +60,7 @@ const icons = {
   swap: '<path d="M16 3 20 7l-4 4M4 7h16M8 21l-4-4 4-4m12 4H4"/>',
   x: '<path d="m18 6-12 12M6 6l12 12"/>',
   help: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
 };
 
 function icon(name, size = 16, extra = "") {
@@ -97,6 +98,9 @@ const state = {
   counties: [],
   listings: [],
   user: null,
+  notifications: [],
+  unreadNotificationCount: 0,
+  notificationPreferenceDraft: null,
   loading: true,
   search: "",
   place: "Everywhere",
@@ -230,7 +234,7 @@ function renderPage() {
     <header class="topbar"><a class="brand" href="#top" aria-label="Mavuno Market home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">mavuno<span>market</span></span></a>
       <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><a href="#field-notes">Field notes</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
       <div class="top-actions"><button class="saved-nav ${state.showSaved ? "saved-nav--active" : ""}" data-action="toggle-saved">${icon("heart", 17)}<span>Saved</span>${savedForCrop().length ? `<b>${savedForCrop().length}</b>` : ""}</button>
-      ${state.user ? `<button class="account-nav" data-action="profile" title="Edit your profile">${escapeHtml(state.user.displayName || state.user.phone)}<span>Profile</span></button><button class="signin-nav" data-action="signout">Sign out</button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
+      ${state.user ? `<button class="notification-nav" data-action="notifications" aria-label="Notifications${state.unreadNotificationCount ? `, ${state.unreadNotificationCount} unread` : ""}">${icon("bell", 18)}${state.unreadNotificationCount ? `<span class="notification-count">${state.unreadNotificationCount > 99 ? "99+" : state.unreadNotificationCount}</span>` : ""}</button><button class="account-nav" data-action="profile" title="Edit your profile">${escapeHtml(state.user.displayName || state.user.phone)}<span>Profile</span></button><button class="signin-nav" data-action="signout">Sign out</button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
       ${state.market.role === "seller" ? `<button class="button button--green button--nav" data-action="post">${icon("plus", 17)} Post a listing</button>` : ""}
       <button class="mobile-menu" data-action="menu" aria-label="Open menu">${icon("menu", 22)}</button></div></header>
     <main id="top"><section class="hero"><div class="hero-image" role="img" aria-label="Sunlit Kenyan farmland"></div><div class="hero-content"><div class="eyebrow"><span class="eyebrow-line"></span> KENYA'S ${escapeHtml(crop.name.toUpperCase())} MARKETPLACE</div>
@@ -345,9 +349,18 @@ function renderModal() {
         <div class="profile-fields"><label>Your name<input name="displayName" value="${escapeHtml(user.displayName)}" minlength="2" maxlength="60" autocomplete="name" placeholder="e.g. Amina Wanjiru" required></label>
         <label>Your county <span class="optional-label">Optional</span><select name="county"><option value="">Choose a county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === user.county ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}</select></label></div>
         <label>About you <span class="optional-label">Optional</span><textarea name="bio" rows="4" maxlength="500" placeholder="Tell people what you grow, where you work, or what you’re looking for.">${escapeHtml(user.bio)}</textarea><small class="profile-hint">Keep it simple—your experience, area, or what kind of sugarcane connection you need.</small></label>
+        <label class="notification-preference"><input type="checkbox" name="listingNotificationsEnabled" ${(state.notificationPreferenceDraft ?? user.listingNotificationsEnabled) ? "checked" : ""} ${user.county ? "" : "disabled"}><span><strong>New listings in my county</strong><small>${user.county ? `Get an in-app notification when someone posts in ${escapeHtml(user.county)}.` : "Choose your county above to turn this on."}</small></span></label>
         <div class="profile-contact-note">${icon("help", 15)}<span><strong>Your number isn’t shown on your public profile.</strong><small>It’s shared through listing contact when someone requests it.</small></span></div>
         <button class="button button--green form-submit" type="submit">Save profile ${icon("arrow", 16)}</button>
       </form></section>`);
+  }
+  if (state.modal.type === "notifications") {
+    const notifications = state.notifications;
+    return backdrop(`<section class="modal notifications-modal" role="dialog" aria-modal="true" aria-labelledby="notifications-title">
+      ${heading("YOUR MARKET", "Your <em>alerts.</em>", "New sugarcane listings posted in your county.")}
+      <div class="notifications-toolbar">${state.unreadNotificationCount ? `<span>${state.unreadNotificationCount} unread</span><button data-action="mark-all-notifications">Mark all as read</button>` : `<span>All caught up</span>`}</div>
+      ${notifications.length ? `<div class="notification-list">${notifications.map((notification) => `<article class="notification-item ${notification.readAt ? "" : "notification-item--unread"}"><span class="notification-indicator" aria-hidden="true"></span><div class="notification-copy"><h3>${escapeHtml(notification.title)}</h3><p>${escapeHtml(notification.body)}</p><time>${escapeHtml(new Date(`${notification.createdAt.replace(" ", "T")}Z`).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }))}</time><button class="notification-open" data-action="open-notification" data-id="${notification.id}" data-listing-id="${notification.listingId}">View listing ${icon("arrow", 14)}</button></div>${notification.readAt ? "" : `<button class="notification-mark-read" data-action="mark-notification-read" data-id="${notification.id}" aria-label="Mark as read">${icon("check", 15)}</button>`}</article>`).join("")}</div>` : `<div class="notification-empty"><span>${icon("bell", 21)}</span><h3>No alerts yet</h3><p>When a grower posts a new listing in your county, it will show up here.</p></div>`}
+    </section>`);
   }
   if (state.modal.type === "article") {
     const article = fieldArticles.find((item) => item.id === state.modal.articleId);
@@ -398,6 +411,38 @@ function render() {
   renderToast();
 }
 
+function renderNotificationBadge() {
+  const button = root.querySelector('[data-action="notifications"]');
+  if (!button) return;
+  button.setAttribute("aria-label", `Notifications${state.unreadNotificationCount ? `, ${state.unreadNotificationCount} unread` : ""}`);
+  const existingCount = button.querySelector(".notification-count");
+  if (state.unreadNotificationCount && existingCount) {
+    existingCount.textContent = state.unreadNotificationCount > 99 ? "99+" : String(state.unreadNotificationCount);
+  } else if (state.unreadNotificationCount) {
+    button.insertAdjacentHTML("beforeend", `<span class="notification-count">${state.unreadNotificationCount > 99 ? "99+" : state.unreadNotificationCount}</span>`);
+  } else {
+    existingCount?.remove();
+  }
+}
+
+async function refreshNotifications(renderInbox = false) {
+  if (!state.user) return;
+  try {
+    const data = await request(`/api/${state.market.crop}/notifications`);
+    state.notifications = data.notifications || [];
+    state.unreadNotificationCount = data.unreadCount || 0;
+    renderNotificationBadge();
+    if (renderInbox && state.modal?.type === "notifications") render();
+  } catch (error) {
+    if (error.message.includes("Sign in")) {
+      state.user = null;
+      state.notifications = [];
+      state.unreadNotificationCount = 0;
+      render();
+    }
+  }
+}
+
 async function loadMarket() {
   state.loading = true;
   render();
@@ -411,6 +456,9 @@ async function loadMarket() {
     state.counties = marketData.counties || [];
     state.listings = listingsData.listings || [];
     state.user = sessionData.user || null;
+    state.notifications = [];
+    state.unreadNotificationCount = 0;
+    if (state.user) await refreshNotifications();
   } catch (error) {
     notify(`Could not connect to this crop marketplace. ${error.message}`);
   } finally {
@@ -502,6 +550,7 @@ async function submitAuth(form) {
       user = roleData.user;
     }
     state.user = user;
+    await refreshNotifications();
     const afterLogin = state.modal.afterLogin;
     state.modal = afterLogin === "post" && user.role === "seller" ? { type: "post" } : null;
     render();
@@ -522,9 +571,11 @@ async function submitProfile(form) {
         displayName: formData.get("displayName"),
         county: formData.get("county"),
         bio: formData.get("bio"),
+        listingNotificationsEnabled: formData.get("listingNotificationsEnabled") === "on",
       }),
     });
     state.user = data.user;
+    state.notificationPreferenceDraft = null;
     state.modal = null;
     render();
     notify("Your profile has been updated.");
@@ -559,6 +610,8 @@ async function signOut() {
   try {
     await request(`/api/${state.market.crop}/auth/logout`, { method: "POST" });
     state.user = null;
+    state.notifications = [];
+    state.unreadNotificationCount = 0;
     state.modal = null;
     render();
     notify("You are signed out.");
@@ -722,7 +775,49 @@ root.addEventListener("click", async (event) => {
     state.authMode = "login";
     setModal("auth");
   } else if (action === "profile") {
-    if (state.user) setModal("profile");
+    if (state.user) {
+      state.notificationPreferenceDraft = Boolean(state.user.listingNotificationsEnabled);
+      setModal("profile");
+    }
+  } else if (action === "notifications") {
+    if (state.user) {
+      state.modal = { type: "notifications" };
+      render();
+      await refreshNotifications(true);
+    }
+  } else if (action === "mark-notification-read") {
+    try {
+      await request(`/api/${state.market.crop}/notifications/${control.dataset.id}/read`, { method: "POST" });
+      await refreshNotifications(true);
+    } catch (error) {
+      notify(error.message);
+    }
+  } else if (action === "mark-all-notifications") {
+    try {
+      await request(`/api/${state.market.crop}/notifications/read-all`, { method: "POST" });
+      await refreshNotifications(true);
+    } catch (error) {
+      notify(error.message);
+    }
+  } else if (action === "open-notification") {
+    const listingId = Number(control.dataset.listingId);
+    try {
+      await request(`/api/${state.market.crop}/notifications/${control.dataset.id}/read`, { method: "POST" });
+      await refreshNotifications();
+      if (!state.listings.some((listing) => listing.id === listingId)) {
+        const data = await request(`/api/${state.market.crop}/listings`);
+        state.listings = data.listings || [];
+      }
+      if (!state.listings.some((listing) => listing.id === listingId)) {
+        state.modal = null;
+        render();
+        notify("That listing is no longer available.");
+        return;
+      }
+      openListing(listingId);
+    } catch (error) {
+      notify(error.message);
+    }
   } else if (action === "toggle-auth") {
     state.authMode = state.authMode === "signup" ? "login" : "signup";
     render();
@@ -787,6 +882,21 @@ root.addEventListener("input", (event) => {
 
 root.addEventListener("change", (event) => {
   const field = event.target.dataset.field;
+  if (event.target.name === "listingNotificationsEnabled") {
+    state.notificationPreferenceDraft = event.target.checked;
+  }
+  if (event.target.name === "county" && event.target.form?.dataset.form === "profile") {
+    const preference = event.target.form.elements.namedItem("listingNotificationsEnabled");
+    if (!event.target.value) {
+      preference.checked = false;
+      preference.disabled = true;
+      state.notificationPreferenceDraft = false;
+    } else {
+      preference.disabled = false;
+    }
+    const note = preference.closest("label").querySelector("small");
+    note.textContent = event.target.value ? `Get an in-app notification when someone posts in ${event.target.value}.` : "Choose your county above to turn this on.";
+  }
   if (field === "selected-crop") {
     state.selectedCrop = event.target.value;
     render();
@@ -830,5 +940,7 @@ document.addEventListener("keydown", (event) => {
     render();
   }
 });
-
 loadMarket();
+setInterval(() => {
+  if (state.user && !document.hidden) refreshNotifications(state.modal?.type === "notifications");
+}, 60_000);
