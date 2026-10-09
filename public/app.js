@@ -117,6 +117,7 @@ const state = {
   locationResults: [],
   locationLoading: false,
   locationMap: null,
+  locationMapFrame: null,
   locationMarker: null,
 };
 
@@ -363,6 +364,10 @@ function render() {
   const focusName = active?.getAttribute("data-field") || active?.name;
   const selectionStart = active && typeof active.selectionStart === "number" ? active.selectionStart : null;
   const formData = new Map();
+  if (state.locationMapFrame !== null) {
+    cancelAnimationFrame(state.locationMapFrame);
+    state.locationMapFrame = null;
+  }
   if (state.locationMap) {
     state.locationMap.remove();
     state.locationMap = null;
@@ -607,7 +612,10 @@ function initializeLocationMap() {
   state.locationMap = map;
   if (pinned) state.locationMarker = window.L.marker(center).addTo(map);
   map.on("click", (event) => selectMapPoint(event.latlng));
-  requestAnimationFrame(() => map.invalidateSize());
+  state.locationMapFrame = requestAnimationFrame(() => {
+    state.locationMapFrame = null;
+    if (state.locationMap === map && element.isConnected) map.invalidateSize({ pan: false });
+  });
 }
 
 async function selectMapPoint(point) {
