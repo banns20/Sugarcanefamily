@@ -264,7 +264,7 @@ function locationFromResult(result) {
 async function fetchGeocoder(url) {
   const result = await fetch(url, {
     headers: {
-      'User-Agent': `MavunoMarket/1.0 (${geocoderContact})`,
+      'User-Agent': `SugarcaneFamily/1.0 (${geocoderContact})`,
       'Accept-Language': 'en',
     },
     signal: AbortSignal.timeout(7000),
@@ -540,5 +540,5 @@ app.get('*path', (_request, response) => {
 
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
-  console.log(`Mavuno Market is listening at http://localhost:${port}`);
+  console.log(`SugarcaneFamily is listening at http://localhost:${port}`);
 });

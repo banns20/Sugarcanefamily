@@ -192,7 +192,7 @@ function listingCard(listing) {
       <div class="listing-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres</span><span class="fact-divider"></span><span>${escapeHtml(listing.crop)}</span></div>
       <div class="listing-footer"><div class="price-block"><strong>${money(listing.rate)}</strong><span>${isStanding ? " / acre · crop" : " / acre · year"}</span></div>
         <button class="text-link" data-action="details" data-id="${listing.id}">Details ${icon("arrow", 15)}</button></div>
-      <div class="seller-line"><span class="seller-avatar">${listing.verified ? icon("check", 12) : icon("leaf", 12)}</span><span>${escapeHtml(listing.seller)}</span>${listing.verified ? `<span class="verified-mark" title="Mavuno member">${icon("check", 11)}</span><small>Member</small>` : ""}</div>
+      <div class="seller-line"><span class="seller-avatar">${listing.verified ? icon("check", 12) : icon("leaf", 12)}</span><span>${escapeHtml(listing.seller)}</span>${listing.verified ? `<span class="verified-mark" title="SugarcaneFamily member">${icon("check", 11)}</span><small>Member</small>` : ""}</div>
     </div>
   </article>`;
 }
@@ -231,7 +231,7 @@ function renderPage() {
   const title = cropTitle();
   const modal = renderModal();
   return `<div class="app-shell">
-    <header class="topbar"><a class="brand" href="#top" aria-label="Mavuno Market home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">mavuno<span>market</span></span></a>
+    <header class="topbar"><a class="brand" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">sugarcane<span>family</span></span></a>
       <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><a href="#field-notes">Field notes</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
       <div class="top-actions"><button class="saved-nav ${state.showSaved ? "saved-nav--active" : ""}" data-action="toggle-saved">${icon("heart", 17)}<span>Saved</span>${savedForCrop().length ? `<b>${savedForCrop().length}</b>` : ""}</button>
       ${state.user ? `<button class="notification-nav" data-action="notifications" aria-label="Notifications${state.unreadNotificationCount ? `, ${state.unreadNotificationCount} unread` : ""}">${icon("bell", 18)}${state.unreadNotificationCount ? `<span class="notification-count">${state.unreadNotificationCount > 99 ? "99+" : state.unreadNotificationCount}</span>` : ""}</button><button class="account-nav" data-action="profile" title="Edit your profile">${escapeHtml(state.user.displayName || state.user.phone)}<span>Profile</span></button><button class="signin-nav" data-action="signout">Sign out</button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
@@ -250,7 +250,7 @@ function renderPage() {
     <section class="field-notes section-wrap" id="field-notes"><div class="section-heading field-notes-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> FROM THE FIELD</div><h2>Ideas to help you <em>grow.</em></h2><p>Practical notes for growers, buyers, and landowners.</p></div><span class="field-notes-mark">${icon("book", 22)} Grower journal</span></div>
       <div class="article-grid">${fieldArticles.map(articleCard).join("")}</div></section>
     <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:hello@mavunomarket.ke">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
-    <footer class="footer"><a class="brand brand--footer" href="#top"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">mavuno<span>market</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
+    <footer class="footer"><a class="brand brand--footer" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">sugarcane<span>family</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
 }
 
 function renderModal() {
@@ -319,7 +319,7 @@ function renderModal() {
       <p class="listing-location">${icon("map", 15)} ${escapeHtml(listing.district)}</p><div class="details-price">${money(listing.rate)} <small>${listing.kind === crop.standingLabel ? "/ acre · crop" : "/ acre · year"}</small></div>
       <div class="details-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres available</span><span>${escapeHtml(listing.crop)}</span><span>${escapeHtml(listing.description || "Contact the grower for more details.")}</span></div>
       <a class="map-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">${icon("map", 15)} ${isPinned ? "Open pinned location" : "View area on map"} ${icon("arrow", 14)}</a>
-      <div class="contact-grower"><span class="seller-avatar">${icon("leaf", 13)}</span><span><strong>${escapeHtml(listing.seller)}</strong><small>${listing.verified ? "Mavuno member" : "Example listing"}</small></span>
+      <div class="contact-grower"><span class="seller-avatar">${icon("leaf", 13)}</span><span><strong>${escapeHtml(listing.seller)}</strong><small>${listing.verified ? "SugarcaneFamily member" : "Example listing"}</small></span>
       ${state.contactPhone ? `<a class="button button--green" href="tel:${escapeHtml(state.contactPhone)}">Call ${escapeHtml(state.contactPhone)}</a>` : `<button class="button button--green" data-action="contact">Contact seller ${icon("arrow", 16)}</button>`}</div></div></section>`);
   }
 
