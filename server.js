@@ -96,14 +96,26 @@ function openCropDatabase(crop) {
       longitude REAL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      read_at TEXT,
+      UNIQUE(user_id, listing_id)
+    );
     CREATE INDEX IF NOT EXISTS listings_created_at_idx ON listings(created_at DESC);
     CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications(user_id, created_at DESC, id DESC);
   `);
 
   ensureColumn(database, 'users', 'role', 'role TEXT NOT NULL DEFAULT \'seller\'');
   ensureColumn(database, 'users', 'display_name', 'display_name TEXT NOT NULL DEFAULT \'\'');
   ensureColumn(database, 'users', 'profile_county', 'profile_county TEXT NOT NULL DEFAULT \'\'');
   ensureColumn(database, 'users', 'bio', 'bio TEXT NOT NULL DEFAULT \'\'');
+  ensureColumn(database, 'users', 'listing_notifications_enabled', 'listing_notifications_enabled INTEGER NOT NULL DEFAULT 0');
   const listingColumns = database.prepare('PRAGMA table_info(listings)').all();
   if (!listingColumns.some((column) => column.name === 'is_sample')) {
     database.exec('ALTER TABLE listings ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0');
@@ -131,6 +143,7 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(dirname, 'views'));
 app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(dirname, 'public'), { maxAge: isProduction ? '1d' : 0 }));
+app.use('/vendor/leaflet', express.static(path.join(dirname, 'node_modules/leaflet/dist'), { maxAge: isProduction ? '1d' : 0 }));
 app.use('/uploads', express.static(uploadDir, { maxAge: '1d', immutable: true }));
 
 function digest(value) {
@@ -165,7 +178,7 @@ function readSession(request) {
   }
 
   const session = request.database.prepare(`
-    SELECT users.id, users.phone, users.role, users.display_name, users.profile_county, users.bio FROM sessions
+    SELECT users.id, users.phone, users.role, users.display_name, users.profile_county, users.bio, users.listing_notifications_enabled FROM sessions
     JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ?
   `).get(digest(token), Date.now());
@@ -332,7 +345,7 @@ app.post('/api/:cropId/auth/login', authLimiter, (request, response) => {
   const password = String(request.body?.password ?? '');
   if (!phone || !password) return response.status(400).json({ error: 'Enter your Kenyan phone number and password.' });
 
-  const record = request.database.prepare('SELECT id, phone, password_salt, password_hash, role, display_name, profile_county, bio FROM users WHERE phone = ?').get(phone);
+  const record = request.database.prepare('SELECT id, phone, password_salt, password_hash, role, display_name, profile_county, bio, listing_notifications_enabled FROM users WHERE phone = ?').get(phone);
   if (!record) return response.status(401).json({ error: 'That number and password do not match.' });
   const candidate = scryptSync(password, record.password_salt, 64);
   const stored = Buffer.from(record.password_hash, 'hex');
@@ -344,6 +357,7 @@ app.post('/api/:cropId/auth/login', authLimiter, (request, response) => {
   return response.json({ user: {
     phone: record.phone, role: record.role, displayName: record.display_name,
     county: record.profile_county, bio: record.bio,
+    listingNotificationsEnabled: Boolean(record.listing_notifications_enabled),
   } });
 });
 
@@ -352,6 +366,7 @@ app.get('/api/:cropId/auth/session', (request, response) => {
   response.json({ user: user ? {
     phone: user.phone, role: user.role, displayName: user.display_name,
     county: user.profile_county, bio: user.bio,
+    listingNotificationsEnabled: Boolean(user.listing_notifications_enabled),
   } : null });
 });
 
@@ -362,6 +377,7 @@ app.patch('/api/:cropId/auth/role', requireAuth, (request, response) => {
   response.json({ user: {
     phone: request.user.phone, role, displayName: request.user.display_name,
     county: request.user.profile_county, bio: request.user.bio,
+    listingNotificationsEnabled: Boolean(request.user.listing_notifications_enabled),
   } });
 });
 
@@ -369,6 +385,7 @@ app.patch('/api/:cropId/auth/profile', requireAuth, (request, response) => {
   const displayName = String(request.body?.displayName ?? '').trim();
   const county = String(request.body?.county ?? '').trim();
   const bio = String(request.body?.bio ?? '').trim();
+  const listingNotificationsEnabled = request.body?.listingNotificationsEnabled === true;
   if (displayName.length < 2 || displayName.length > 60) {
     return response.status(400).json({ error: 'Your name must be between 2 and 60 characters.' });
   }
@@ -376,11 +393,15 @@ app.patch('/api/:cropId/auth/profile', requireAuth, (request, response) => {
     return response.status(400).json({ error: 'Choose a valid county or leave it blank.' });
   }
   if (bio.length > 500) return response.status(400).json({ error: 'Your introduction must be 500 characters or fewer.' });
+  if (listingNotificationsEnabled && !county) {
+    return response.status(400).json({ error: 'Choose a county before turning on new-listing notifications.' });
+  }
 
-  request.database.prepare('UPDATE users SET display_name = ?, profile_county = ?, bio = ? WHERE id = ?')
-    .run(displayName, county, bio, request.user.id);
+  request.database.prepare('UPDATE users SET display_name = ?, profile_county = ?, bio = ?, listing_notifications_enabled = ? WHERE id = ?')
+    .run(displayName, county, bio, listingNotificationsEnabled ? 1 : 0, request.user.id);
   response.json({ user: {
     phone: request.user.phone, role: request.user.role, displayName, county, bio,
+    listingNotificationsEnabled,
   } });
 });
 
@@ -393,6 +414,33 @@ app.post('/api/:cropId/auth/logout', (request, response) => {
     if (token) request.database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(digest(decodeURIComponent(token)));
   }
   response.clearCookie(name, { httpOnly: true, sameSite: 'lax', path: '/' });
+  response.json({ ok: true });
+});
+
+app.get('/api/:cropId/notifications', requireAuth, (request, response) => {
+  const notifications = request.database.prepare(`
+    SELECT id, listing_id AS listingId, title, body, created_at AS createdAt, read_at AS readAt
+    FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 30
+  `).all(request.user.id);
+  const unreadCount = request.database.prepare(
+    'SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL',
+  ).get(request.user.id).count;
+  response.json({ notifications, unreadCount });
+});
+
+app.post('/api/:cropId/notifications/read-all', requireAuth, (request, response) => {
+  request.database.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND read_at IS NULL')
+    .run(request.user.id);
+  response.json({ ok: true });
+});
+
+app.post('/api/:cropId/notifications/:id/read', requireAuth, (request, response) => {
+  const notificationId = Number(request.params.id);
+  if (!Number.isSafeInteger(notificationId) || notificationId <= 0) {
+    return response.status(400).json({ error: 'Choose a valid notification.' });
+  }
+  request.database.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?')
+    .run(notificationId, request.user.id);
   response.json({ ok: true });
 });
 
@@ -449,6 +497,17 @@ app.post('/api/:cropId/listings', requireAuth, upload.single('image'), async (re
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(title, county, locality, acres, priceKes, kind, cropVariety, expectedHarvest, description, imageUrl, request.user.id, latitude, longitude);
   const listing = request.database.prepare('SELECT * FROM listings WHERE id = ?').get(Number(result.lastInsertRowid));
+  request.database.prepare(`
+    INSERT OR IGNORE INTO notifications (user_id, listing_id, title, body)
+    SELECT id, ?, ?, ? FROM users
+    WHERE id <> ? AND listing_notifications_enabled = 1 AND profile_county = ?
+  `).run(
+    listing.id,
+    'New sugarcane listing in your county',
+    `${listing.title} · ${listing.locality}, ${listing.county}`,
+    request.user.id,
+    listing.county,
+  );
   response.status(201).json({ listing: publicListing(listing, request.crop) });
 });
 
