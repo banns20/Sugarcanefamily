@@ -112,6 +112,8 @@ const state = {
   modal: savedContext ? null : { type: "onboarding" },
   selected: null,
   contactPhone: "",
+  contactLocation: null,
+  paymentFlow: null,
   authMode: "login",
   toast: "",
   listingKind: "Standing sugarcane",
@@ -146,7 +148,12 @@ async function request(url, options = {}) {
     throw error;
   }
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "The request could not be completed.");
+  if (!response.ok) {
+    const error = new Error(data.error || "The request could not be completed.");
+    error.status = response.status;
+    error.paymentRequired = data.paymentRequired === true;
+    throw error;
+  }
   return data;
 }
 
@@ -192,7 +199,7 @@ function listingCard(listing) {
       <div class="listing-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres</span><span class="fact-divider"></span><span>${escapeHtml(listing.crop)}</span></div>
       <div class="listing-footer"><div class="price-block"><strong>${money(listing.rate)}</strong><span>${isStanding ? " / acre · crop" : " / acre · year"}</span></div>
         <button class="text-link" data-action="details" data-id="${listing.id}">Details ${icon("arrow", 15)}</button></div>
-      <div class="seller-line"><span class="seller-avatar">${listing.verified ? icon("check", 12) : icon("leaf", 12)}</span><span>${escapeHtml(listing.seller)}</span>${listing.verified ? `<span class="verified-mark" title="Mavuno member">${icon("check", 11)}</span><small>Member</small>` : ""}</div>
+      <div class="seller-line"><span class="seller-avatar">${listing.verified ? icon("check", 12) : icon("leaf", 12)}</span><span>${escapeHtml(listing.seller)}</span>${listing.verified ? `<span class="verified-mark" title="SugarcaneFamily member">${icon("check", 11)}</span><small>Member</small>` : ""}</div>
     </div>
   </article>`;
 }
@@ -231,7 +238,7 @@ function renderPage() {
   const title = cropTitle();
   const modal = renderModal();
   return `<div class="app-shell">
-    <header class="topbar"><a class="brand" href="#top" aria-label="Mavuno Market home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">mavuno<span>market</span></span></a>
+    <header class="topbar"><a class="brand" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">sugarcane<span>family</span></span></a>
       <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><a href="#field-notes">Field notes</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
       <div class="top-actions"><button class="saved-nav ${state.showSaved ? "saved-nav--active" : ""}" data-action="toggle-saved">${icon("heart", 17)}<span>Saved</span>${savedForCrop().length ? `<b>${savedForCrop().length}</b>` : ""}</button>
       ${state.user ? `<button class="notification-nav" data-action="notifications" aria-label="Notifications${state.unreadNotificationCount ? `, ${state.unreadNotificationCount} unread` : ""}">${icon("bell", 18)}${state.unreadNotificationCount ? `<span class="notification-count">${state.unreadNotificationCount > 99 ? "99+" : state.unreadNotificationCount}</span>` : ""}</button><button class="account-nav" data-action="profile" title="Edit your profile">${escapeHtml(state.user.displayName || state.user.phone)}<span>Profile</span></button><button class="signin-nav" data-action="signout">Sign out</button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
@@ -250,7 +257,7 @@ function renderPage() {
     <section class="field-notes section-wrap" id="field-notes"><div class="section-heading field-notes-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> FROM THE FIELD</div><h2>Ideas to help you <em>grow.</em></h2><p>Practical notes for growers, buyers, and landowners.</p></div><span class="field-notes-mark">${icon("book", 22)} Grower journal</span></div>
       <div class="article-grid">${fieldArticles.map(articleCard).join("")}</div></section>
     <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:hello@mavunomarket.ke">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
-    <footer class="footer"><a class="brand brand--footer" href="#top"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">mavuno<span>market</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
+    <footer class="footer"><a class="brand brand--footer" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">sugarcane<span>family</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
 }
 
 function renderModal() {
@@ -272,20 +279,34 @@ function renderModal() {
 
   if (state.modal.type === "auth") {
     const signup = state.authMode === "signup";
-    return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, `Create a ${state.market.role} account for the ${escapeHtml(crop.name.toLowerCase())} marketplace.`)}
+    return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, signup ? `Create your ${state.market.role} account. Your details are saved securely so you can sign in again later.` : `Use the Kenyan phone number and password you registered with. New here? Create an account below first.`)}
       <form class="auth-form" data-form="auth"><label>Kenyan mobile number<input name="phone" type="tel" autocomplete="tel" placeholder="0712 345 678" required></label>
       <label>Password<input name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" minlength="8" maxlength="128" placeholder="At least 8 characters" required></label>
-      ${signup ? "" : `<label class="remember-me"><input name="rememberMe" type="checkbox"><span>Remember me on this device</span></label>`}
+      ${signup ? "" : `<label class="remember-me"><input name="rememberMe" type="checkbox" checked><span>Keep me signed in on this device</span></label>`}
       <button class="button button--green form-submit" type="submit">${signup ? "Create account" : "Sign in"} ${icon("arrow", 16)}</button></form>
       <p class="auth-switch">${signup ? "Already have an account?" : "New to this crop market?"} <button data-action="toggle-auth">${signup ? "Sign in" : "Create an account"}</button></p>
       <p class="form-footnote">${icon("help", 14)} Your account is separate from other crop marketplaces.</p></section>`);
   }
 
+  if (state.modal.type === "payment" && state.paymentFlow) {
+    const flow = state.paymentFlow;
+    const waiting = ["starting", "waiting", "pending"].includes(flow.status);
+    const sellerPayment = flow.purpose === "seller_listing_credit";
+    return backdrop(`<section class="modal payment-modal" role="dialog" aria-modal="true" aria-labelledby="payment-title">
+      ${heading(sellerPayment ? "SELLER POSTING" : "BUYER LAND CHECK", `<span id="payment-title">${sellerPayment ? "Unlock one <em>listing.</em>" : "Reveal grower <em>details.</em>"}</span>`, sellerPayment ? "One KSh 500 payment adds a listing credit to your account." : "One KSh 500 payment unlocks this listing’s seller contact and precise map pin.")}
+      <div class="payment-summary"><span>${icon("check", 18)}</span><div><strong>KSh 500</strong><small>${sellerPayment ? "One reusable listing credit" : "Contact and location for this listing"}</small></div></div>
+      ${waiting ? `<div class="payment-progress" role="status" aria-live="polite"><span class="payment-progress-mark">${icon("sparkle", 18)}</span><div><strong>${flow.status === "starting" ? "Connecting to M-Pesa…" : flow.status === "pending" ? "Payment still processing" : "Check your phone"}</strong><p>${flow.status === "starting" ? "Please wait while we request a secure M-Pesa prompt." : "Approve the KSh 500 prompt on your phone. We’ll verify it with Safaricom before unlocking anything."}</p></div></div>
+        ${flow.status === "pending" ? `<button class="button button--green form-submit" type="button" data-action="check-payment">Check payment status ${icon("arrow", 16)}</button>` : ""}` : `<form class="payment-form" data-form="payment"><label>Safaricom number for M-Pesa<input name="phone" type="tel" autocomplete="tel" value="${escapeHtml(flow.phone || state.user?.phone || "")}" placeholder="0712 345 678" required></label>
+        <button class="button button--green form-submit" type="submit">Send KSh 500 M-Pesa prompt ${icon("arrow", 16)}</button></form>`}
+      <p class="form-footnote">${icon("help", 14)} Your details unlock only after Safaricom confirms this payment.</p></section>`);
+  }
+
   if (state.modal.type === "post") {
     const isStanding = state.listingKind === crop.standingLabel;
-    return backdrop(`<section class="modal post-modal" role="dialog" aria-modal="true" aria-labelledby="post-title">${heading("SUGARCANE SELLER", `Share your <em>sugarcane.</em>`, "Your account number is shared when a buyer requests contact.")}
+    const hasListingCredit = Number(state.user?.listingCredits) > 0;
+    return backdrop(`<section class="modal post-modal" role="dialog" aria-modal="true" aria-labelledby="post-title">${heading("SUGARCANE SELLER", `Share your <em>sugarcane.</em>`, "A listing credit lets you publish one sugarcane offer.")}
       <form class="listing-form" data-form="listing" enctype="multipart/form-data">
-      <label class="form-full">Listing title<input name="title" minlength="5" maxlength="100" placeholder="e.g. ${escapeHtml(crop.standingLabel)} near Mumias" required></label>
+      ${hasListingCredit ? `<label class="form-full">Listing title<input name="title" minlength="5" maxlength="100" placeholder="e.g. ${escapeHtml(crop.standingLabel)} near Mumias" required></label>
       <div class="form-full listing-type-choice" role="radiogroup" aria-label="What are you listing?"><span class="choice-label">What are you offering?</span><div>
         <label class="${isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="${escapeHtml(crop.standingLabel)}" ${isStanding ? "checked" : ""}>${icon("leaf", 16)}<span>${escapeHtml(crop.standingLabel)}<small>Crop already growing</small></span></label>
         <label class="${!isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="Land for lease" ${!isStanding ? "checked" : ""}>${icon("map", 16)}<span>Land for lease<small>Land ready to plant</small></span></label></div></div>
@@ -297,30 +318,32 @@ function renderModal() {
         ${state.locationResults.length ? `<div class="location-results" aria-label="Location search results">${state.locationResults.map((location, index) => `<button type="button" class="location-result" data-action="apply-location" data-index="${index}">${icon("map", 15)}<span>${escapeHtml(location.displayName)}</span><small>${escapeHtml(location.locality)}, ${escapeHtml(location.county)}</small></button>`).join("")}</div>` : ""}
         <div class="location-map-wrap"><div id="listing-location-map" class="location-map" role="application" aria-label="Map of Kenya. Tap to select the listing location."></div><span class="location-map-hint">${state.locationLoading ? "Finding the selected place…" : state.mapPin ? "Tap again to move your pin" : "Tap the map to drop a pin"}</span></div>
         ${state.mapPin ? `<div class="map-pin-status">${icon("map", 14)} <span><strong>Location pinned</strong><small>${escapeHtml(state.mapPin.displayName || `${state.mapPin.latitude.toFixed(4)}, ${state.mapPin.longitude.toFixed(4)}`)}</small></span><button type="button" data-action="clear-pin" aria-label="Remove map pin">${icon("x", 14)}</button></div>` : ""}
-        <small class="location-privacy">The pin is visible to anyone viewing your listing. Leave it unset if you prefer to share only the town. Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.</small>
+        <small class="location-privacy">The precise pin is shared only with a buyer who completes the land check. Map © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.</small>
         <input type="hidden" name="latitude" value="${state.mapPin?.latitude ?? ""}"><input type="hidden" name="longitude" value="${state.mapPin?.longitude ?? ""}"></div>
       <label>Available acres<input name="acres" type="number" min="0.25" step="0.25" placeholder="4.5" required></label>
       <label>${isStanding ? "Crop price per acre (KSh)" : "Annual lease per acre (KSh)"}<input name="priceKes" type="number" min="1" step="1" placeholder="${isStanding ? "185000" : "28000"}" required></label>
       <label>${escapeHtml(crop.fieldLabel)}<input name="cropVariety" placeholder="${escapeHtml(crop.name)}" minlength="2" maxlength="80" required></label>
       <label>${isStanding ? "Expected harvest" : "Lease period"}<input name="expectedHarvest" placeholder="${isStanding ? "Ready in 3 months" : "3 years"}" maxlength="80"></label>
-      <label class="form-full">Describe what you're offering<textarea name="description" rows="3" minlength="20" maxlength="1000" placeholder="In your own words, describe the crop or land, its condition, access, and what a buyer should know." required></textarea></label>
+      <label class="form-full">Describe what you&apos;re offering<textarea name="description" rows="3" minlength="20" maxlength="1000" placeholder="In your own words, describe the crop or land, its condition, access, and what a buyer should know." required></textarea></label>
       <label class="form-full photo-input-label">Your land or crop photo<input name="image" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" required><small>JPG, PNG, or WebP · up to 6 MB</small></label>
-      <button class="button button--green form-submit" type="submit">Publish listing ${icon("arrow", 17)}</button></form>
-      <p class="form-footnote">${icon("help", 14)} Use a photo you have the right to share. Your number stays private until a buyer requests it.</p></section>`);
+      <button class="button button--green form-submit" type="submit">Publish listing ${icon("arrow", 17)}</button>` : `<div class="payment-callout form-full"><span class="payment-callout-icon">${icon("leaf", 20)}</span><strong>Publish one listing</strong><p>Pay once to add one credit. It stays on your account until you publish.</p><button class="button button--green" type="button" data-action="listing-credit">Get a listing credit · KSh 500 ${icon("arrow", 16)}</button></div>`}</form>
+      <p class="form-footnote">${icon("help", 14)} Use a photo you have the right to share. Your number and precise field pin stay private until a buyer pays for a land check.</p></section>`);
   }
 
   if (state.modal.type === "details" && state.selected) {
     const listing = state.selected;
-    const isPinned = listing.latitude != null && listing.longitude != null;
-    const mapUrl = isPinned ? `https://www.openstreetmap.org/?mlat=${listing.latitude}&mlon=${listing.longitude}#map=15/${listing.latitude}/${listing.longitude}` : `https://www.openstreetmap.org/search?query=${encodeURIComponent(listing.district)}`;
+    const latitude = state.contactLocation?.latitude;
+    const longitude = state.contactLocation?.longitude;
+    const isPinned = latitude != null && longitude != null && Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude));
+    const mapUrl = isPinned ? `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=15/${latitude}/${longitude}` : `https://www.openstreetmap.org/search?query=${encodeURIComponent(listing.district)}`;
     return backdrop(`<section class="modal details-modal" role="dialog" aria-modal="true" aria-labelledby="details-title"><button class="close-button details-close" data-action="close" aria-label="Close">${icon("x", 22)}</button>
       <img class="details-image" src="${escapeHtml(imageUrl(listing.image))}" alt="${escapeHtml(`${listing.kind} in ${listing.locality}`)}"><div class="details-content">
       <span class="deal-tag details-deal ${listing.kind === crop.standingLabel ? "deal-tag--harvest" : ""}">${escapeHtml(listing.kind)}</span><h2 id="details-title">${escapeHtml(listing.title)}</h2>
       <p class="listing-location">${icon("map", 15)} ${escapeHtml(listing.district)}</p><div class="details-price">${money(listing.rate)} <small>${listing.kind === crop.standingLabel ? "/ acre · crop" : "/ acre · year"}</small></div>
       <div class="details-facts"><span><strong>${escapeHtml(listing.acres)}</strong> acres available</span><span>${escapeHtml(listing.crop)}</span><span>${escapeHtml(listing.description || "Contact the grower for more details.")}</span></div>
-      <a class="map-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">${icon("map", 15)} ${isPinned ? "Open pinned location" : "View area on map"} ${icon("arrow", 14)}</a>
-      <div class="contact-grower"><span class="seller-avatar">${icon("leaf", 13)}</span><span><strong>${escapeHtml(listing.seller)}</strong><small>${listing.verified ? "Mavuno member" : "Example listing"}</small></span>
-      ${state.contactPhone ? `<a class="button button--green" href="tel:${escapeHtml(state.contactPhone)}">Call ${escapeHtml(state.contactPhone)}</a>` : `<button class="button button--green" data-action="contact">Contact seller ${icon("arrow", 16)}</button>`}</div></div></section>`);
+      ${state.contactPhone ? `<a class="map-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">${icon("map", 15)} ${isPinned ? "Open precise field location" : "View general area on map"} ${icon("arrow", 14)}</a>` : `<p class="map-link map-link--locked">${icon("map", 15)} Precise location included with land check</p>`}
+      <div class="contact-grower"><span class="seller-avatar">${icon("leaf", 13)}</span><span><strong>${escapeHtml(listing.seller)}</strong><small>${listing.verified ? "SugarcaneFamily member" : "Example listing"}</small></span>
+      ${state.contactPhone ? `<a class="button button--green" href="tel:${escapeHtml(state.contactPhone)}">Call ${escapeHtml(state.contactPhone)}</a>` : `<button class="button button--green" data-action="contact">Land check · KSh 500 ${icon("arrow", 16)}</button>`}</div></div></section>`);
   }
 
   if (state.modal.type === "filters") {
@@ -589,6 +612,7 @@ async function submitListing(form) {
   formData.set("kind", state.listingKind);
   try {
     const data = await request(`/api/${state.market.crop}/listings`, { method: "POST", body: formData });
+    state.user.listingCredits = data.listingCredits;
     state.listings.unshift(data.listing);
     state.place = "Everywhere";
     state.deal = "All land";
@@ -630,6 +654,7 @@ function toggleSaved(id) {
 function openListing(id) {
   state.selected = state.listings.find((listing) => listing.id === Number(id)) || null;
   state.contactPhone = "";
+  state.contactLocation = null;
   setModal("details");
 }
 
@@ -642,8 +667,87 @@ async function contactGrower() {
   try {
     const data = await request(`/api/${state.market.crop}/listings/${state.selected.id}/contact`);
     state.contactPhone = data.phone;
+    state.contactLocation = { latitude: data.latitude, longitude: data.longitude };
     render();
   } catch (error) {
+    if (error.paymentRequired) {
+      state.paymentFlow = { purpose: "buyer_listing_reveal", listingId: state.selected.id, phone: state.user.phone, status: "ready", returnTo: "details" };
+      setModal("payment");
+      return;
+    }
+    notify(error.message);
+  }
+}
+
+async function finishPaidFlow(flow) {
+  state.paymentFlow = null;
+  if (flow.purpose === "seller_listing_credit") {
+    const data = await request(`/api/${state.market.crop}/auth/session`);
+    state.user = data.user;
+    state.modal = { type: "post" };
+    render();
+    notify("Payment confirmed. Your listing credit is ready.");
+    return;
+  }
+  const data = await request(`/api/${state.market.crop}/listings/${flow.listingId}/contact`);
+  state.contactPhone = data.phone;
+  state.contactLocation = { latitude: data.latitude, longitude: data.longitude };
+  state.modal = { type: "details" };
+  render();
+  notify("Payment confirmed. Grower contact details are unlocked.");
+}
+
+async function pollPayment(paymentId, flow = state.paymentFlow) {
+  if (!flow) return;
+  flow.paymentId = paymentId;
+  flow.status = "waiting";
+  render();
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    try {
+      const data = await request(`/api/${state.market.crop}/payments/${paymentId}`);
+      if (data.payment.status === "confirmed") {
+        await finishPaidFlow(flow);
+        return;
+      }
+      if (["failed", "expired"].includes(data.payment.status)) {
+        flow.status = "failed";
+        render();
+        notify("M-Pesa payment was not completed. You can try again.");
+        return;
+      }
+    } catch (error) {
+      notify(error.message);
+      break;
+    }
+  }
+  flow.status = "pending";
+  render();
+  notify("Payment is still processing. Check its status again before retrying.");
+}
+
+async function submitPayment(form) {
+  const flow = state.paymentFlow;
+  if (!flow) return;
+  flow.phone = new FormData(form).get("phone");
+  flow.status = "starting";
+  render();
+  try {
+    const data = await request(`/api/${state.market.crop}/payments`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        purpose: flow.purpose, listingId: flow.listingId, phone: flow.phone,
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    });
+    if (data.alreadyUnlocked) {
+      await finishPaidFlow(flow);
+      return;
+    }
+    await pollPayment(data.payment.id, flow);
+  } catch (error) {
+    flow.status = "failed";
+    render();
     notify(error.message);
   }
 }
@@ -771,6 +875,11 @@ root.addEventListener("click", async (event) => {
     await confirmContext();
   } else if (action === "post") {
     openPost();
+  } else if (action === "listing-credit") {
+    state.paymentFlow = { purpose: "seller_listing_credit", phone: state.user?.phone || "", status: "ready", returnTo: "post" };
+    setModal("payment");
+  } else if (action === "check-payment") {
+    if (state.paymentFlow?.paymentId) await pollPayment(state.paymentFlow.paymentId, state.paymentFlow);
   } else if (action === "login") {
     state.authMode = "login";
     setModal("auth");
@@ -928,6 +1037,7 @@ root.addEventListener("submit", async (event) => {
   if (form.dataset.form === "auth") await submitAuth(form);
   if (form.dataset.form === "profile") await submitProfile(form);
   if (form.dataset.form === "listing") await submitListing(form);
+  if (form.dataset.form === "payment") await submitPayment(form);
 });
 
 document.addEventListener("keydown", (event) => {

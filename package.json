@@ -16,12 +16,14 @@
     "node": ">=22.5"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.1",
     "ejs": "^7.0.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "file-type": "^22.1.1",
     "leaflet": "^1.9.4",
-    "multer": "^2.4.0"
+    "multer": "^2.4.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "prettier": "^3.9.9"
