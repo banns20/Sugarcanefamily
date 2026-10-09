@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { backup, DatabaseSync } from 'node:sqlite';
@@ -11,10 +12,10 @@ import { rateLimit } from 'express-rate-limit';
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const isProduction = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
-const dataDir = path.join(dirname, 'data');
+const dataDir = isProduction ? path.join(os.tmpdir(), 'sugarcanefamily-data') : path.join(dirname, 'data');
 const cropsDataDir = path.join(dataDir, 'crops');
 const legacySugarcanePath = path.join(dataDir, 'cane-country.sqlite');
-const uploadDir = path.join(dirname, 'uploads');
+const uploadDir = isProduction ? path.join(os.tmpdir(), 'sugarcanefamily-uploads') : path.join(dirname, 'uploads');
 const sessionDuration = 30 * 24 * 60 * 60 * 1000;
 const browserSessionDuration = 24 * 60 * 60 * 1000;
 const counties = [
