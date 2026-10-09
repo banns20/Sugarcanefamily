@@ -16,6 +16,7 @@ const cropsDataDir = path.join(dataDir, 'crops');
 const legacySugarcanePath = path.join(dataDir, 'cane-country.sqlite');
 const uploadDir = path.join(dirname, 'uploads');
 const sessionDuration = 30 * 24 * 60 * 60 * 1000;
+const browserSessionDuration = 24 * 60 * 60 * 1000;
 const counties = [
   'Baringo', 'Bomet', 'Bungoma', 'Busia', 'Elgeyo-Marakwet', 'Embu', 'Garissa',
   'Homa Bay', 'Isiolo', 'Kajiado', 'Kakamega', 'Kericho', 'Kiambu', 'Kilifi',
@@ -66,6 +67,9 @@ function openCropDatabase(crop) {
       password_salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'seller',
+      display_name TEXT NOT NULL DEFAULT '',
+      profile_county TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -96,6 +100,9 @@ function openCropDatabase(crop) {
   `);
 
   ensureColumn(database, 'users', 'role', 'role TEXT NOT NULL DEFAULT \'seller\'');
+  ensureColumn(database, 'users', 'display_name', 'display_name TEXT NOT NULL DEFAULT \'\'');
+  ensureColumn(database, 'users', 'profile_county', 'profile_county TEXT NOT NULL DEFAULT \'\'');
+  ensureColumn(database, 'users', 'bio', 'bio TEXT NOT NULL DEFAULT \'\'');
   const listingColumns = database.prepare('PRAGMA table_info(listings)').all();
   if (!listingColumns.some((column) => column.name === 'is_sample')) {
     database.exec('ALTER TABLE listings ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0');
@@ -157,7 +164,7 @@ function readSession(request) {
   }
 
   const session = request.database.prepare(`
-    SELECT users.id, users.phone, users.role FROM sessions
+    SELECT users.id, users.phone, users.role, users.display_name, users.profile_county, users.bio FROM sessions
     JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ?
   `).get(digest(token), Date.now());
@@ -170,18 +177,19 @@ function requireAuth(request, response, next) {
   next();
 }
 
-function createSession(request, user, response) {
+function createSession(request, user, response, rememberMe = true) {
   const token = randomBytes(32).toString('base64url');
-  const expiresAt = Date.now() + sessionDuration;
+  const expiresAt = Date.now() + (rememberMe ? sessionDuration : browserSessionDuration);
   request.database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .run(digest(token), user.id, expiresAt);
-  response.cookie(cookieName(request.crop.id), token, {
+  const cookieOptions = {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.COOKIE_SECURE === 'true',
     path: '/',
-    maxAge: sessionDuration,
-  });
+  };
+  if (rememberMe) cookieOptions.maxAge = sessionDuration;
+  response.cookie(cookieName(request.crop.id), token, cookieOptions);
 }
 
 function publicListing(row, crop) {
@@ -309,7 +317,7 @@ app.post('/api/:cropId/auth/signup', authLimiter, (request, response) => {
       .run(phone, salt, passwordHash, role);
     const user = { id: Number(result.lastInsertRowid), phone, role };
     createSession(request, user, response);
-    return response.status(201).json({ user: { phone, role } });
+    return response.status(201).json({ user: { phone, role, displayName: '', county: '', bio: '' } });
   } catch (error) {
     if (error.message.includes('UNIQUE constraint failed: users.phone')) {
       return response.status(409).json({ error: 'An account already exists for this crop and number. Sign in instead.' });
@@ -323,7 +331,7 @@ app.post('/api/:cropId/auth/login', authLimiter, (request, response) => {
   const password = String(request.body?.password ?? '');
   if (!phone || !password) return response.status(400).json({ error: 'Enter your Kenyan phone number and password.' });
 
-  const record = request.database.prepare('SELECT id, phone, password_salt, password_hash, role FROM users WHERE phone = ?').get(phone);
+  const record = request.database.prepare('SELECT id, phone, password_salt, password_hash, role, display_name, profile_county, bio FROM users WHERE phone = ?').get(phone);
   if (!record) return response.status(401).json({ error: 'That number and password do not match.' });
   const candidate = scryptSync(password, record.password_salt, 64);
   const stored = Buffer.from(record.password_hash, 'hex');
@@ -331,20 +339,48 @@ app.post('/api/:cropId/auth/login', authLimiter, (request, response) => {
     return response.status(401).json({ error: 'That number and password do not match.' });
   }
 
-  createSession(request, { id: record.id, phone: record.phone, role: record.role }, response);
-  return response.json({ user: { phone: record.phone, role: record.role } });
+  createSession(request, { id: record.id, phone: record.phone, role: record.role }, response, request.body?.rememberMe === true);
+  return response.json({ user: {
+    phone: record.phone, role: record.role, displayName: record.display_name,
+    county: record.profile_county, bio: record.bio,
+  } });
 });
 
 app.get('/api/:cropId/auth/session', (request, response) => {
   const user = readSession(request);
-  response.json({ user: user ? { phone: user.phone, role: user.role } : null });
+  response.json({ user: user ? {
+    phone: user.phone, role: user.role, displayName: user.display_name,
+    county: user.profile_county, bio: user.bio,
+  } : null });
 });
 
 app.patch('/api/:cropId/auth/role', requireAuth, (request, response) => {
   const role = String(request.body?.role ?? '');
   if (!['buyer', 'seller'].includes(role)) return response.status(400).json({ error: 'Choose buyer or seller mode.' });
   request.database.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, request.user.id);
-  response.json({ user: { phone: request.user.phone, role } });
+  response.json({ user: {
+    phone: request.user.phone, role, displayName: request.user.display_name,
+    county: request.user.profile_county, bio: request.user.bio,
+  } });
+});
+
+app.patch('/api/:cropId/auth/profile', requireAuth, (request, response) => {
+  const displayName = String(request.body?.displayName ?? '').trim();
+  const county = String(request.body?.county ?? '').trim();
+  const bio = String(request.body?.bio ?? '').trim();
+  if (displayName.length < 2 || displayName.length > 60) {
+    return response.status(400).json({ error: 'Your name must be between 2 and 60 characters.' });
+  }
+  if (county && !counties.includes(county)) {
+    return response.status(400).json({ error: 'Choose a valid county or leave it blank.' });
+  }
+  if (bio.length > 500) return response.status(400).json({ error: 'Your introduction must be 500 characters or fewer.' });
+
+  request.database.prepare('UPDATE users SET display_name = ?, profile_county = ?, bio = ? WHERE id = ?')
+    .run(displayName, county, bio, request.user.id);
+  response.json({ user: {
+    phone: request.user.phone, role: request.user.role, displayName, county, bio,
+  } });
 });
 
 app.post('/api/:cropId/auth/logout', (request, response) => {

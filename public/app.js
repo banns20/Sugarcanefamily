@@ -5,6 +5,44 @@ const savedKey = "mavuno-saved-listings";
 const defaultCrops = [
   { id: "sugarcane", name: "Sugarcane", standingLabel: "Standing sugarcane", fieldLabel: "Sugarcane variety" },
 ];
+const fieldArticles = [
+  {
+    id: "prepare-land",
+    category: "Land preparation",
+    readTime: "4 min read",
+    title: "A practical checklist before planting sugarcane",
+    excerpt: "A little planning before planting can make the season easier to manage. Start with the land, water, access, and a clear agreement.",
+    paragraphs: [
+      "Before planting, walk the whole plot and note its boundaries, slope, drainage, and access route. Confirm that the land is available for the full growing period you have in mind.",
+      "Talk through water availability and how the field will be prepared. Agree who is responsible for clearing, ploughing, planting materials, and any shared access roads.",
+      "Write down the lease period, payment dates, acreage, and responsibilities before work begins. Keep a copy of the agreement and make sure everyone involved understands it.",
+    ],
+  },
+  {
+    id: "standing-cane",
+    category: "Buying standing cane",
+    readTime: "3 min read",
+    title: "What to check when viewing a standing cane crop",
+    excerpt: "A field visit helps you understand the crop, the harvest timing, and how cane can be moved from the farm.",
+    paragraphs: [
+      "Visit the field with the grower and confirm the acreage and exact boundaries. Look across the plot rather than judging the crop from one corner, and ask about the variety and planting or ratoon history.",
+      "Ask how the expected harvest window was estimated and what work remains before cutting. Discuss who arranges harvesting, loading, and transport, and whether there are any mill or delivery requirements.",
+      "Make sure the price, payment timing, and responsibilities are clear in writing. If anything is uncertain, pause and get it clarified before paying or making commitments.",
+    ],
+  },
+  {
+    id: "harvest-planning",
+    category: "Harvest planning",
+    readTime: "4 min read",
+    title: "Plan the harvest before the cane is ready",
+    excerpt: "Coordinate people, transport, and delivery details early so the harvest plan is clear to everyone.",
+    paragraphs: [
+      "Start by agreeing on a realistic harvest window with the grower and confirming any delivery arrangements. Ask what needs to happen before cutting and who will coordinate each step.",
+      "Check that access roads can accommodate the expected vehicles and discuss how loading will be handled. Rain, road conditions, and transport availability can affect timing, so identify a backup plan.",
+      "Keep the grower, harvesting team, and transporter updated if dates change. A shared written schedule helps avoid confusion about quantities, responsibilities, and payment.",
+    ],
+  },
+];
 const icons = {
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
@@ -14,6 +52,7 @@ const icons = {
   leaf: '<path d="M20 4c-8 0-14 4-14 11a5 5 0 0 0 5 5c7 0 11-6 11-14V4ZM4 21c2-5 6-8 11-11"/>',
   map: '<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
   sliders: '<path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
@@ -90,7 +129,15 @@ const imageUrl = (image) => image?.startsWith("http") ? image : image || "https:
 const countyOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>Choose county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === selected ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}`;
 
 async function request(url, options = {}) {
-  const response = await fetch(url, options);
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Cannot reach the marketplace server. Start it with npm run dev and open the same localhost port.");
+    }
+    throw error;
+  }
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "The request could not be completed.");
   return data;
@@ -143,6 +190,13 @@ function listingCard(listing) {
   </article>`;
 }
 
+function articleCard(article) {
+  return `<article class="article-card"><span class="article-icon">${icon("leaf", 21)}</span>
+    <div class="article-meta"><span>${escapeHtml(article.category)}</span><span>${escapeHtml(article.readTime)}</span></div>
+    <h3>${escapeHtml(article.title)}</h3><p>${escapeHtml(article.excerpt)}</p>
+    <button class="article-link" data-action="read-article" data-id="${escapeHtml(article.id)}">Read article ${icon("arrow", 15)}</button></article>`;
+}
+
 function renderMarket() {
   const crop = cropInfo();
   const listings = filteredListings();
@@ -171,9 +225,9 @@ function renderPage() {
   const modal = renderModal();
   return `<div class="app-shell">
     <header class="topbar"><a class="brand" href="#top" aria-label="Mavuno Market home"><span class="brand-mark">${icon("leaf", 20)}</span><span class="brand-name">mavuno<span>market</span></span></a>
-      <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
+      <nav class="main-nav" aria-label="Main navigation"><a class="nav-active" href="#market">Marketplace</a><a href="#how-it-works">How it works</a><a href="#field-notes">Field notes</a><button class="context-nav" data-action="context">${escapeHtml(crop.name)} · ${state.market.role === "buyer" ? "Buyer" : "Seller"} ${icon("down", 14)}</button></nav>
       <div class="top-actions"><button class="saved-nav ${state.showSaved ? "saved-nav--active" : ""}" data-action="toggle-saved">${icon("heart", 17)}<span>Saved</span>${savedForCrop().length ? `<b>${savedForCrop().length}</b>` : ""}</button>
-      ${state.user ? `<button class="account-nav" data-action="signout" title="Sign out">${escapeHtml(state.user.phone)}<span>Sign out</span></button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
+      ${state.user ? `<button class="account-nav" data-action="profile" title="Edit your profile">${escapeHtml(state.user.displayName || state.user.phone)}<span>Profile</span></button><button class="signin-nav" data-action="signout">Sign out</button>` : `<button class="signin-nav" data-action="login">Sign in</button>`}
       ${state.market.role === "seller" ? `<button class="button button--green button--nav" data-action="post">${icon("plus", 17)} Post a listing</button>` : ""}
       <button class="mobile-menu" data-action="menu" aria-label="Open menu">${icon("menu", 22)}</button></div></header>
     <main id="top"><section class="hero"><div class="hero-image" role="img" aria-label="Sunlit Kenyan farmland"></div><div class="hero-content"><div class="eyebrow"><span class="eyebrow-line"></span> KENYA'S ${escapeHtml(crop.name.toUpperCase())} MARKETPLACE</div>
@@ -186,6 +240,8 @@ function renderPage() {
       <div><div class="eyebrow eyebrow--light"><span class="eyebrow-line"></span> A BETTER WAY TO GROW</div><h2>Land brings us<br><em>together.</em></h2></div>
       <p>See the crop or land clearly, agree on terms directly, and connect with growers across Kenya.</p><a href="#market" class="strip-link">Find your next opportunity ${icon("arrow", 17)}</a></div>
       <span class="strip-leaf leaf-a">${icon("leaf", 36)}</span><span class="strip-leaf leaf-b">${icon("leaf", 36)}</span></section>
+    <section class="field-notes section-wrap" id="field-notes"><div class="section-heading field-notes-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> FROM THE FIELD</div><h2>Ideas to help you <em>grow.</em></h2><p>Practical notes for growers, buyers, and landowners.</p></div><span class="field-notes-mark">${icon("book", 22)} Grower journal</span></div>
+      <div class="article-grid">${fieldArticles.map(articleCard).join("")}</div></section>
     <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:hello@mavunomarket.ke">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
     <footer class="footer"><a class="brand brand--footer" href="#top"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">mavuno<span>market</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
 }
@@ -212,6 +268,7 @@ function renderModal() {
     return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, `Create a ${state.market.role} account for the ${escapeHtml(crop.name.toLowerCase())} marketplace.`)}
       <form class="auth-form" data-form="auth"><label>Kenyan mobile number<input name="phone" type="tel" autocomplete="tel" placeholder="0712 345 678" required></label>
       <label>Password<input name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" minlength="8" maxlength="128" placeholder="At least 8 characters" required></label>
+      ${signup ? "" : `<label class="remember-me"><input name="rememberMe" type="checkbox"><span>Remember me on this device</span></label>`}
       <button class="button button--green form-submit" type="submit">${signup ? "Create account" : "Sign in"} ${icon("arrow", 16)}</button></form>
       <p class="auth-switch">${signup ? "Already have an account?" : "New to this crop market?"} <button data-action="toggle-auth">${signup ? "Sign in" : "Create an account"}</button></p>
       <p class="form-footnote">${icon("help", 14)} Your account is separate from other crop marketplaces.</p></section>`);
@@ -267,10 +324,25 @@ function renderModal() {
 
   if (state.modal.type === "menu") {
     return backdrop(`<section class="modal mobile-nav-modal"><button class="close-button" data-action="close" aria-label="Close">${icon("x", 22)}</button>
-      <a href="#market" data-action="close">Marketplace ${icon("chevron", 17)}</a><a href="#how-it-works" data-action="close">How it works ${icon("chevron", 17)}</a>
+      <a href="#market" data-action="close">Marketplace ${icon("chevron", 17)}</a><a href="#how-it-works" data-action="close">How it works ${icon("chevron", 17)}</a><a href="#field-notes" data-action="close">Field notes ${icon("chevron", 17)}</a>
       <button class="mobile-context-action" data-action="context">${escapeHtml(crop.name)} · ${escapeHtml(state.market.role)} ${icon("down", 15)}</button>
-      <button class="mobile-context-action" data-action="${state.user ? "signout" : "login"}">${state.user ? "Sign out" : "Sign in"} ${icon("chevron", 15)}</button>
+      ${state.user ? `<button class="mobile-context-action" data-action="profile">My profile ${icon("chevron", 15)}</button><button class="mobile-context-action" data-action="signout">Sign out ${icon("chevron", 15)}</button>` : `<button class="mobile-context-action" data-action="login">Sign in ${icon("chevron", 15)}</button>`}
       ${state.market.role === "seller" ? `<button class="button button--green" data-action="post">${icon("plus", 16)} Post a listing</button>` : ""}</section>`);
+  }
+  if (state.modal.type === "profile") {
+    const user = state.user;
+    return backdrop(`<section class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">${heading("YOUR ACCOUNT", "Your <em>profile.</em>", "Tell the sugarcane community a little about yourself.")}<div class="profile-account"><span class="profile-avatar">${icon("leaf", 20)}</span><span><strong>${escapeHtml(user.displayName || "Grower profile")}</strong><small>${escapeHtml(user.phone)} · ${escapeHtml(user.role)}</small></span></div>
+      <form class="profile-form" data-form="profile"><label>Display name<input name="displayName" value="${escapeHtml(user.displayName)}" minlength="2" maxlength="60" placeholder="Your name" required></label>
+      <label>County <span class="optional-label">Optional</span><select name="county"><option value="">Choose a county</option>${state.counties.map((county) => `<option value="${escapeHtml(county)}" ${county === user.county ? "selected" : ""}>${escapeHtml(county)}</option>`).join("")}</select></label>
+      <label>Your introduction <span class="optional-label">Optional</span><textarea name="bio" rows="4" maxlength="500" placeholder="Share what you grow or what you are looking for.">${escapeHtml(user.bio)}</textarea></label>
+      <button class="button button--green form-submit" type="submit">Save profile ${icon("arrow", 16)}</button></form></section>`);
+  }
+  if (state.modal.type === "article") {
+    const article = fieldArticles.find((item) => item.id === state.modal.articleId);
+    if (!article) return "";
+    return backdrop(`<article class="modal article-modal" role="dialog" aria-modal="true" aria-labelledby="article-title"><button class="close-button" data-action="close" aria-label="Close">${icon("x", 22)}</button>
+      <span class="article-icon">${icon("book", 21)}</span><div class="article-meta"><span>${escapeHtml(article.category)}</span><span>${escapeHtml(article.readTime)}</span></div><h2 id="article-title">${escapeHtml(article.title)}</h2><p class="article-intro">${escapeHtml(article.excerpt)}</p>
+      <div class="article-body">${article.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div><button class="button button--outline article-close" data-action="close">Back to field notes</button></article>`);
   }
   return "";
 }
@@ -392,7 +464,13 @@ async function submitAuth(form) {
   try {
     const data = await request(`/api/${state.market.crop}/auth/${state.authMode}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: formData.get("phone"), password: formData.get("password"), ...(state.authMode === "signup" ? { role: state.market.role } : {}) }),
+      body: JSON.stringify({
+        phone: formData.get("phone"),
+        password: formData.get("password"),
+        ...(state.authMode === "signup"
+          ? { role: state.market.role }
+          : { rememberMe: formData.get("rememberMe") === "on" }),
+      }),
     });
     let user = data.user;
     if (user.role !== state.market.role) {
@@ -407,6 +485,27 @@ async function submitAuth(form) {
     render();
     if (afterLogin === "contact" && state.selected) await contactGrower();
     else notify(state.authMode === "signup" ? "Your crop marketplace account is ready." : "Welcome back.");
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function submitProfile(form) {
+  const formData = new FormData(form);
+  try {
+    const data = await request(`/api/${state.market.crop}/auth/profile`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        displayName: formData.get("displayName"),
+        county: formData.get("county"),
+        bio: formData.get("bio"),
+      }),
+    });
+    state.user = data.user;
+    state.modal = null;
+    render();
+    notify("Your profile has been updated.");
   } catch (error) {
     notify(error.message);
   }
@@ -553,6 +652,8 @@ root.addEventListener("click", async (event) => {
   } else if (action === "login") {
     state.authMode = "login";
     setModal("auth");
+  } else if (action === "profile") {
+    if (state.user) setModal("profile");
   } else if (action === "toggle-auth") {
     state.authMode = state.authMode === "signup" ? "login" : "signup";
     render();
@@ -569,6 +670,8 @@ root.addEventListener("click", async (event) => {
     toggleSaved(Number(control.dataset.id));
   } else if (action === "details") {
     openListing(control.dataset.id);
+  } else if (action === "read-article") {
+    setModal("article", { articleId: control.dataset.id });
   } else if (action === "deal") {
     state.deal = control.dataset.value;
     render();
@@ -634,6 +737,7 @@ root.addEventListener("submit", async (event) => {
   if (!form) return;
   event.preventDefault();
   if (form.dataset.form === "auth") await submitAuth(form);
+  if (form.dataset.form === "profile") await submitProfile(form);
   if (form.dataset.form === "listing") await submitListing(form);
 });
 
