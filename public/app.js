@@ -279,10 +279,10 @@ function renderModal() {
 
   if (state.modal.type === "auth") {
     const signup = state.authMode === "signup";
-    return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, `Create a ${state.market.role} account for the ${escapeHtml(crop.name.toLowerCase())} marketplace.`)}
+    return backdrop(`<section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">${heading(`${escapeHtml(crop.name.toUpperCase())} · ${state.market.role.toUpperCase()}`, ` <span id="auth-title">${signup ? "Join the <em>market.</em>" : "Welcome <em>back.</em>"}</span>`, signup ? `Create your ${state.market.role} account. Your details are saved securely so you can sign in again later.` : `Use the Kenyan phone number and password you registered with. New here? Create an account below first.`)}
       <form class="auth-form" data-form="auth"><label>Kenyan mobile number<input name="phone" type="tel" autocomplete="tel" placeholder="0712 345 678" required></label>
       <label>Password<input name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" minlength="8" maxlength="128" placeholder="At least 8 characters" required></label>
-      ${signup ? "" : `<label class="remember-me"><input name="rememberMe" type="checkbox"><span>Remember me on this device</span></label>`}
+      ${signup ? "" : `<label class="remember-me"><input name="rememberMe" type="checkbox" checked><span>Keep me signed in on this device</span></label>`}
       <button class="button button--green form-submit" type="submit">${signup ? "Create account" : "Sign in"} ${icon("arrow", 16)}</button></form>
       <p class="auth-switch">${signup ? "Already have an account?" : "New to this crop market?"} <button data-action="toggle-auth">${signup ? "Sign in" : "Create an account"}</button></p>
       <p class="form-footnote">${icon("help", 14)} Your account is separate from other crop marketplaces.</p></section>`);
