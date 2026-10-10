@@ -67,12 +67,12 @@ async function migrateLegacyDatabase(crop, sqlitePath) {
     await client.query('BEGIN');
     const userIds = new Map();
     for (const row of legacy.prepare('SELECT * FROM users').all()) {
-      const inserted = await client.query(`
-        INSERT INTO market_users (id,crop_id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11::timestamptz,NOW()))
+      const existingAccount = await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone]);
+      const account = existingAccount.rows[0] ?? (await client.query(`
+        INSERT INTO market_users (crop_id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10::timestamptz,NOW()))
         ON CONFLICT (crop_id, phone) DO NOTHING RETURNING id
-      `, [row.id,crop.id,row.phone,row.password_salt,row.password_hash,pick(row,userColumns,'role','seller'),pick(row,userColumns,'display_name',''),pick(row,userColumns,'profile_county',''),pick(row,userColumns,'bio',''),Boolean(pick(row,userColumns,'listing_notifications_enabled',0)),pick(row,userColumns,'created_at')]);
-      const account = inserted.rows[0] ?? (await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone])).rows[0];
+      `, [crop.id,row.phone,row.password_salt,row.password_hash,pick(row,userColumns,'role','seller'),pick(row,userColumns,'display_name',''),pick(row,userColumns,'profile_county',''),pick(row,userColumns,'bio',''),Boolean(pick(row,userColumns,'listing_notifications_enabled',0)),pick(row,userColumns,'created_at')])).rows[0] ?? (await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone])).rows[0];
       userIds.set(row.id, account.id);
     }
     for (const row of legacy.prepare('SELECT * FROM listings').all()) {
@@ -140,6 +140,69 @@ app.use((_request, response, next) => {
   if (_request.secure) response.set('Strict-Transport-Security', 'max-age=63072000');
   next();
 });
+
+const supportEmail = 'sugarcanefamily97@gmail.com';
+const policyPages = {
+  '/terms': {
+    title: 'Terms of use',
+    description: 'The terms for using Sugarcane Family, a marketplace for sugarcane and related land opportunities in Kenya.',
+    eyebrow: 'USING THE MARKETPLACE',
+    heading: 'Terms of <em>use.</em>',
+    introduction: 'Sugarcane Family helps people discover and post sugarcane and land listings, and connect directly with one another.',
+    sections: [
+      { heading: 'Using Sugarcane Family', paragraphs: ['Use an account and the marketplace honestly and lawfully. Keep your sign-in details private and make sure the information, photos, contact details and locations you submit are accurate and yours to share.', 'You are responsible for deciding whether to proceed with a listing or opportunity, confirming details with the other party and agreeing on any transaction directly with them. Sugarcane Family does not verify every listing or guarantee its accuracy, availability, condition or outcome.'] },
+      { heading: 'Marketplace fees', paragraphs: ['The KSh 500 payment buys access to a specific marketplace feature: one seller listing credit, or access to the grower’s contact and precise location for one buyer listing. The fee is non-refundable after Safaricom confirms the payment. See the Fees and refunds policy for details.'] },
+      { heading: 'Respectful use', paragraphs: ['Do not post unlawful, misleading or unauthorized material, misuse another person’s contact details or location, attempt to bypass paid access, or interfere with the security or availability of the service.', 'If you have a question or believe information is being misused, contact our support team.'] },
+      { heading: 'Changes and contact', paragraphs: ['We may update the marketplace or these terms as the service changes. The current version of these terms is published on this page. Questions can be sent to our support email.'] },
+    ],
+  },
+  '/privacy': {
+    title: 'Privacy policy',
+    description: 'Learn how Sugarcane Family handles account, listing, location and payment information.',
+    eyebrow: 'YOUR INFORMATION',
+    heading: 'Privacy, with <em>care.</em>',
+    introduction: 'This page explains the information Sugarcane Family uses to operate the sugarcane marketplace and its paid access features.',
+    sections: [
+      { heading: 'Information you provide', paragraphs: ['An account uses your Kenyan phone number and password. You can also provide a display name, county, introduction and listing-notification preference. Sellers provide listing descriptions, photos and general areas, and may choose to include precise map coordinates.', 'When you start a marketplace payment, we process the phone number for the M-Pesa prompt and keep the payment status and related Safaricom transaction references needed to verify the payment and provide the feature. We do not store your M-Pesa PIN.'] },
+      { heading: 'How information is used and shared', paragraphs: ['We use account and listing data to run the marketplace, secure sign-in, show listings, send requested notifications, handle support and verify paid access. Listing content is displayed to marketplace visitors. Uploaded listing photos use public image links, so do not upload an image you intend to keep private.', 'We send payment requests to Safaricom M-Pesa and verify their status with Safaricom. If you use the map’s location search, your search or map coordinates are sent to OpenStreetMap’s Nominatim service to find or describe locations. The map uses OpenStreetMap. Hosting, database and image-storage providers process information to provide the site.'] },
+      { heading: 'Passwords, sessions and choices', paragraphs: ['Passwords are stored as secure password hashes, not readable passwords. Sign-in uses a protected session cookie; it expires after the duration selected for that sign-in. Keep your password and payment PIN private.', 'Do not post another person’s contact information or exact location without their permission. You can contact us to ask a question or make a request about your personal information.'] },
+      { heading: 'Questions', paragraphs: ['For a privacy question or request, email our support team. Include enough context to identify your request, but do not send your password, M-Pesa PIN or other secret authentication details.'] },
+    ],
+  },
+  '/fees-and-refunds': {
+    title: 'Fees and refunds',
+    description: 'Understand the KSh 500 Sugarcane Family marketplace-access fee and non-refundable payment policy.',
+    eyebrow: 'CLEAR, BEFORE YOU PAY',
+    heading: 'Fees & <em>refunds.</em>',
+    introduction: 'Sugarcane Family charges KSh 500 to access either of the marketplace features below. Each successful marketplace-access payment is non-refundable.',
+    sections: [
+      { heading: 'Seller listing credit — KSh 500', paragraphs: ['A seller’s KSh 500 payment adds one listing credit. The credit can be used to publish one listing and remains available on the account until used.'] },
+      { heading: 'Buyer contact and location — KSh 500', paragraphs: ['A buyer’s KSh 500 payment unlocks the grower’s contact details and precise location for the specific listing selected. General listing information remains free to view.'] },
+      { heading: 'Non-refundable payments', paragraphs: ['Once Safaricom confirms the KSh 500 payment, the fee for the selected marketplace feature is non-refundable, including when a listing credit is not used or the buyer changes their mind after the requested contact and location are unlocked.', 'If an M-Pesa prompt is cancelled or times out, or you believe a payment was deducted but the feature did not unlock, contact us before starting another payment. We can check the payment status with Safaricom. A failed or unconfirmed request does not itself establish that a payment succeeded.'] },
+      { heading: 'Need help?', paragraphs: ['Email sugarcanefamily97@gmail.com with your account phone number, payment date and the feature you were trying to access. Never email your M-Pesa PIN or password.'] },
+    ],
+  },
+  '/support': {
+    title: 'Support',
+    description: 'Contact Sugarcane Family support about your account, marketplace listings or M-Pesa marketplace access.',
+    eyebrow: 'HERE TO HELP',
+    heading: 'Talk with our <em>team.</em>',
+    introduction: 'Questions about Sugarcane Family, your listing or a KSh 500 marketplace-access payment? Email us and tell us what happened.',
+    sections: [
+      { heading: 'Email support', paragraphs: ['Write to sugarcane family support at sugarcanefamily97@gmail.com. Include your account phone number and a short description of the issue. For an M-Pesa issue, include the payment date and the feature you selected so we can help check the status.'], email: supportEmail },
+      { heading: 'Keep account details safe', paragraphs: ['Never send your password or M-Pesa PIN by email. Please avoid including unnecessary private information or another grower’s contact details.'] },
+    ],
+  },
+};
+
+for (const [route, page] of Object.entries(policyPages)) {
+  app.get(route, (_request, response) => response.render('policy', {
+    page,
+    supportEmail,
+    pagePath: route,
+    paths: Object.entries(policyPages).map(([href, item]) => ({ href, title: item.title })),
+  }));
+}
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');

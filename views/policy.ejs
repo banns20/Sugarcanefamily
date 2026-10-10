@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7ef" />
+    <meta name="description" content="<%= page.description %>" />
+    <title><%= page.title %> | Sugarcane Family</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/legal.css" />
+  </head>
+  <body class="legal-body">
+    <header class="legal-header">
+      <a class="brand" href="/" aria-label="Sugarcane Family home">
+        <span class="brand-mark" aria-hidden="true">SF</span>
+        <span class="brand-name">sugarcane<span>family</span></span>
+      </a>
+      <a class="legal-home-link" href="/">Marketplace <span aria-hidden="true">↗</span></a>
+    </header>
+    <main class="legal-main">
+      <nav class="legal-breadcrumb" aria-label="Breadcrumb"><a href="/">Marketplace</a><span aria-hidden="true">/</span><span><%= page.title %></span></nav>
+      <header class="legal-title-block">
+        <span class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span><%= page.eyebrow %></span>
+        <h1><%- page.heading %></h1>
+        <p><%= page.introduction %></p>
+      </header>
+      <% if (page.sections.some((section) => section.email)) { %>
+        <a class="legal-contact-card" href="mailto:<%= supportEmail %>">
+          <span class="legal-contact-icon" aria-hidden="true">@</span>
+          <span><small>Email Sugarcane Family</small><strong><%= supportEmail %></strong></span>
+          <span class="legal-contact-arrow" aria-hidden="true">↗</span>
+        </a>
+      <% } %>
+      <div class="legal-layout">
+        <nav class="legal-toc" aria-label="On this page">
+          <span>ON THIS PAGE</span>
+          <% page.sections.forEach((section, index) => { %>
+            <a href="#section-<%= index + 1 %>"><%= section.heading %></a>
+          <% }) %>
+        </nav>
+        <div class="legal-sections">
+          <% page.sections.forEach((section, index) => { %>
+            <section class="legal-section" id="section-<%= index + 1 %>">
+              <span class="legal-section-number"><%= String(index + 1).padStart(2, '0') %></span>
+              <div>
+                <h2><%= section.heading %></h2>
+                <% section.paragraphs.forEach((paragraph) => { %><p><%= paragraph %></p><% }) %>
+                <% if (section.email) { %><a class="legal-inline-link" href="mailto:<%= supportEmail %>">Email Sugarcane Family support <span aria-hidden="true">↗</span></a><% } %>
+              </div>
+            </section>
+          <% }) %>
+        </div>
+      </div>
+      <div class="legal-callout">
+        <span aria-hidden="true">SF</span>
+        <p>Questions about Sugarcane Family? <a href="/support">We’re here to help.</a></p>
+      </div>
+    </main>
+    <footer class="legal-footer">
+      <a class="brand brand--footer" href="/" aria-label="Sugarcane Family home">
+        <span class="brand-mark" aria-hidden="true">SF</span>
+        <span class="brand-name">sugarcane<span>family</span></span>
+      </a>
+      <nav class="footer-links" aria-label="Policies and help">
+        <% paths.forEach((item) => { %><a href="<%= item.href %>"<%= item.href === pagePath ? ' aria-current=page' : '' %>><%= item.title %></a><% }) %>
+      </nav>
+      <a class="legal-support-email" href="mailto:<%= supportEmail %>"><%= supportEmail %></a>
+    </footer>
+  </body>
+</html>
