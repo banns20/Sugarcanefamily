@@ -257,7 +257,7 @@ function renderPage() {
     <section class="field-notes section-wrap" id="field-notes"><div class="section-heading field-notes-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> FROM THE FIELD</div><h2>Ideas to help you <em>grow.</em></h2><p>Practical notes for growers, buyers, and landowners.</p></div><span class="field-notes-mark">${icon("book", 22)} Grower journal</span></div>
       <div class="article-grid">${fieldArticles.map(articleCard).join("")}</div></section>
     <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:sugarcanefamily97@gmail.com">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
-    <footer class="footer"><a class="brand brand--footer" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">sugarcane<span>family</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
+    <footer class="footer"><a class="brand brand--footer" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">sugarcane<span>family</span></span></a><span>For the people who grow what we all need.</span><nav class="footer-links" aria-label="Policies and help"><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/fees-and-refunds">Fees &amp; refunds</a><a href="/support">Support</a></nav><span>Kenya · KSh</span></footer>${modal}</div>`;
 }
 
 function renderModal() {
