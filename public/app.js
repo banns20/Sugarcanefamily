@@ -256,7 +256,7 @@ function renderPage() {
       <span class="strip-leaf leaf-a">${icon("leaf", 36)}</span><span class="strip-leaf leaf-b">${icon("leaf", 36)}</span></section>
     <section class="field-notes section-wrap" id="field-notes"><div class="section-heading field-notes-heading"><div><div class="eyebrow eyebrow--dark"><span class="eyebrow-line"></span> FROM THE FIELD</div><h2>Ideas to help you <em>grow.</em></h2><p>Practical notes for growers, buyers, and landowners.</p></div><span class="field-notes-mark">${icon("book", 22)} Grower journal</span></div>
       <div class="article-grid">${fieldArticles.map(articleCard).join("")}</div></section>
-    <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:hello@mavunomarket.ke">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
+    <section class="bottom-note section-wrap" id="grower-notes"><div><span class="note-spark">✳</span><span>Better growing starts with a conversation.</span></div><a href="mailto:sugarcanefamily97@gmail.com">Questions? Talk to our team ${icon("arrow", 15)}</a></section></main>
     <footer class="footer"><a class="brand brand--footer" href="#top" aria-label="SugarcaneFamily home"><span class="brand-mark">${icon("leaf", 17)}</span><span class="brand-name">sugarcane<span>family</span></span></a><span>For the people who grow what we all need.</span><span>Kenya · KSh</span></footer>${modal}</div>`;
 }
 

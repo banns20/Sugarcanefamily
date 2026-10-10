@@ -67,12 +67,12 @@ async function migrateLegacyDatabase(crop, sqlitePath) {
     await client.query('BEGIN');
     const userIds = new Map();
     for (const row of legacy.prepare('SELECT * FROM users').all()) {
-      const inserted = await client.query(`
-        INSERT INTO market_users (id,crop_id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11::timestamptz,NOW()))
+      const existingAccount = await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone]);
+      const account = existingAccount.rows[0] ?? (await client.query(`
+        INSERT INTO market_users (crop_id,phone,password_salt,password_hash,role,display_name,profile_county,bio,listing_notifications_enabled,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10::timestamptz,NOW()))
         ON CONFLICT (crop_id, phone) DO NOTHING RETURNING id
-      `, [row.id,crop.id,row.phone,row.password_salt,row.password_hash,pick(row,userColumns,'role','seller'),pick(row,userColumns,'display_name',''),pick(row,userColumns,'profile_county',''),pick(row,userColumns,'bio',''),Boolean(pick(row,userColumns,'listing_notifications_enabled',0)),pick(row,userColumns,'created_at')]);
-      const account = inserted.rows[0] ?? (await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone])).rows[0];
+      `, [crop.id,row.phone,row.password_salt,row.password_hash,pick(row,userColumns,'role','seller'),pick(row,userColumns,'display_name',''),pick(row,userColumns,'profile_county',''),pick(row,userColumns,'bio',''),Boolean(pick(row,userColumns,'listing_notifications_enabled',0)),pick(row,userColumns,'created_at')])).rows[0] ?? (await client.query('SELECT id FROM market_users WHERE crop_id=$1 AND phone=$2', [crop.id, row.phone])).rows[0];
       userIds.set(row.id, account.id);
     }
     for (const row of legacy.prepare('SELECT * FROM listings').all()) {
