@@ -639,11 +639,11 @@ app.post('/api/:cropId/payments/admin-access', requireAuth, adminAccessLimiter, 
   if (purpose !== 'buyer_listing_reveal' || !Number.isSafeInteger(listingId) || listingId <= 0 || request.user.role !== 'buyer') {
     return response.status(400).json({ error: 'Choose a valid buyer listing.' });
   }
-  const listing = await pool.query('SELECT owner_user_id FROM market_listings WHERE id=$1 AND crop_id=$2', [listingId, request.crop.id]);
+  const listing = await pool.query('SELECT owner_user_id,phone,latitude,longitude FROM market_listings WHERE id=$1 AND crop_id=$2', [listingId, request.crop.id]);
   if (!listing.rows[0]) return response.status(404).json({ error: 'This listing is no longer available.' });
   if (String(listing.rows[0].owner_user_id) === String(request.user.id)) return response.status(403).json({ error: 'You cannot unlock your own listing.' });
   await pool.query('INSERT INTO market_entitlements (crop_id,user_id,listing_id,payment_id) VALUES ($1,$2,$3,NULL) ON CONFLICT (crop_id,user_id,listing_id) DO NOTHING', [request.crop.id, request.user.id, listingId]);
-  return response.json({ granted: true });
+  return response.json({ granted: true, phone: listing.rows[0].phone, latitude: listing.rows[0].latitude == null ? null : Number(listing.rows[0].latitude), longitude: listing.rows[0].longitude == null ? null : Number(listing.rows[0].longitude) });
 });
 
 app.post('/api/:cropId/payments', requireAuth, paymentLimiter, async (request, response) => {

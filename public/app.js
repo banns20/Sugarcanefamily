@@ -735,7 +735,18 @@ async function submitAdminAccess(form) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ purpose: flow.purpose, listingId: flow.listingId, code: new FormData(form).get("code") }),
     });
-    if (data.granted) await finishPaidFlow(flow);
+    if (data.granted) {
+      if (flow.purpose === "buyer_listing_reveal" && data.phone) {
+        state.paymentFlow = null;
+        state.contactPhone = data.phone;
+        state.contactLocation = { latitude: data.latitude, longitude: data.longitude };
+        state.modal = { type: "details" };
+        render();
+        notify("Admin access granted. Grower contact details are unlocked.");
+      } else {
+        await finishPaidFlow(flow);
+      }
+    }
   } catch (error) {
     notify(error.message);
   }
