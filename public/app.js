@@ -612,7 +612,8 @@ async function submitListing(form) {
   try {
     const data = await request(`/api/${state.market.crop}/listings`, { method: "POST", body: formData });
     state.user.listingCredits = data.listingCredits;
-    state.listings.unshift(data.listing);
+    const listingsData = await request(`/api/${state.market.crop}/listings`);
+    state.listings = listingsData.listings || [];
     state.place = "Everywhere";
     state.deal = "All land";
     state.search = "";
