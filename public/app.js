@@ -308,9 +308,7 @@ function renderModal() {
     return backdrop(`<section class="modal post-modal" role="dialog" aria-modal="true" aria-labelledby="post-title">${heading("SUGARCANE SELLER", `Share your <em>sugarcane.</em>`, "A listing credit lets you publish one sugarcane offer.")}
       <form class="listing-form" data-form="listing" enctype="multipart/form-data">
       ${hasListingCredit ? `<label class="form-full">Listing title<input name="title" minlength="5" maxlength="100" placeholder="e.g. ${escapeHtml(crop.standingLabel)} near Mumias" required></label>
-      <div class="form-full listing-type-choice" role="radiogroup" aria-label="What are you listing?"><span class="choice-label">What are you offering?</span><div>
-        <label class="${isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="${escapeHtml(crop.standingLabel)}" ${isStanding ? "checked" : ""}>${icon("leaf", 16)}<span>${escapeHtml(crop.standingLabel)}<small>Crop already growing</small></span></label>
-        <label class="${!isStanding ? "choice-active" : ""}"><input type="radio" name="kind" value="Land for lease" ${!isStanding ? "checked" : ""}>${icon("map", 16)}<span>Land for lease<small>Land ready to plant</small></span></label></div></div>
+      <input type="hidden" name="kind" value="${escapeHtml(state.listingKind || crop.standingLabel)}">
       <label>County<select name="county" data-field="county" required>${countyOptions(state.postCounty)}</select></label>
       <label>Town or area<input name="locality" data-field="locality" value="${escapeHtml(state.postLocality)}" placeholder="Mumias West" minlength="2" maxlength="80" required></label>
       <div class="form-full location-tools"><div class="location-picker-heading"><span class="choice-label">Pin the field on the map <span class="optional-label">Optional</span></span><small>Search for an area, use your device, or tap the map to place a pin.</small></div>
