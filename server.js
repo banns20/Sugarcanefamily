@@ -622,9 +622,13 @@ app.post('/api/:cropId/payments/admin-access', requireAuth, adminAccessLimiter, 
   const code = String(request.body?.code ?? '');
   const purpose = String(request.body?.purpose ?? '');
   const listingId = Number(request.body?.listingId);
-  const suppliedCode = Buffer.from(code);
-  const expectedCode = Buffer.from(adminAccessCode);
-  if (!code || suppliedCode.length !== expectedCode.length || !timingSafeEqual(suppliedCode, expectedCode)) {
+  const acceptedCodes = [adminAccessCode, adminAccessCode.replace(/^code/i, '')];
+  const validCode = acceptedCodes.some((acceptedCode) => {
+    const suppliedCode = Buffer.from(code);
+    const expectedCode = Buffer.from(acceptedCode);
+    return suppliedCode.length === expectedCode.length && timingSafeEqual(suppliedCode, expectedCode);
+  });
+  if (!code || !validCode) {
     return response.status(401).json({ error: 'That admin code is not valid.' });
   }
   if (purpose === 'seller_listing_credit') {
