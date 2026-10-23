@@ -632,9 +632,8 @@ app.post('/api/:cropId/payments/admin-access', requireAuth, adminAccessLimiter, 
     return response.status(401).json({ error: 'That admin code is not valid.' });
   }
   if (purpose === 'seller_listing_credit') {
-    if (request.user.role !== 'seller') return response.status(400).json({ error: 'Switch to seller mode first.' });
-    const result = await pool.query('UPDATE market_users SET listing_credits=listing_credits+1 WHERE id=$1 AND crop_id=$2 RETURNING listing_credits', [request.user.id, request.crop.id]);
-    return response.json({ granted: true, listingCredits: result.rows[0]?.listing_credits ?? 0 });
+    const result = await pool.query('UPDATE market_users SET role=\'seller\', listing_credits=listing_credits+1 WHERE id=$1 AND crop_id=$2 RETURNING role,listing_credits', [request.user.id, request.crop.id]);
+    return response.json({ granted: true, role: result.rows[0]?.role ?? 'seller', listingCredits: result.rows[0]?.listing_credits ?? 0 });
   }
   if (purpose !== 'buyer_listing_reveal' || !Number.isSafeInteger(listingId) || listingId <= 0 || request.user.role !== 'buyer') {
     return response.status(400).json({ error: 'Choose a valid buyer listing.' });

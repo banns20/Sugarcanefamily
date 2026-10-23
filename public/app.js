@@ -735,7 +735,13 @@ async function submitAdminAccess(form) {
       body: JSON.stringify({ purpose: flow.purpose, listingId: flow.listingId, code: new FormData(form).get("code") }),
     });
     if (data.granted) {
-      if (flow.purpose === "buyer_listing_reveal" && data.phone) {
+      if (flow.purpose === "seller_listing_credit") {
+        state.user.role = "seller";
+        state.market.role = "seller";
+        state.selectedRole = "seller";
+        state.user.listingCredits = data.listingCredits;
+        await finishPaidFlow(flow);
+      } else if (flow.purpose === "buyer_listing_reveal" && data.phone) {
         state.paymentFlow = null;
         state.contactPhone = data.phone;
         state.contactLocation = { latitude: data.latitude, longitude: data.longitude };
