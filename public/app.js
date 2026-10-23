@@ -298,7 +298,8 @@ function renderModal() {
       ${waiting ? `<div class="payment-progress" role="status" aria-live="polite"><span class="payment-progress-mark">${icon("sparkle", 18)}</span><div><strong>${flow.status === "starting" ? "Connecting to M-Pesa…" : flow.status === "pending" ? "Payment still processing" : "Check your phone"}</strong><p>${flow.status === "starting" ? "Please wait while we request a secure M-Pesa prompt." : "Approve the KSh 500 prompt on your phone. We’ll verify it with Safaricom before unlocking anything."}</p></div></div>
         ${flow.status === "pending" ? `<button class="button button--green form-submit" type="button" data-action="check-payment">Check payment status ${icon("arrow", 16)}</button>` : ""}` : `<form class="payment-form" data-form="payment"><label>Safaricom number for M-Pesa<input name="phone" type="tel" autocomplete="tel" value="${escapeHtml(flow.phone || state.user?.phone || "")}" placeholder="0712 345 678" required></label>
         <button class="button button--green form-submit" type="submit">Send KSh 500 M-Pesa prompt ${icon("arrow", 16)}</button></form>`}
-      <p class="form-footnote">${icon("help", 14)} Your details unlock only after Safaricom confirms this payment.</p></section>`);
+      <form class="admin-access-form" data-form="admin-access"><label>Admin access code<input name="code" type="password" autocomplete="off" placeholder="Admin code" required></label><button class="text-link" type="submit">Use admin access instead</button></form>
+      <p class="form-footnote">${icon("help", 14)} Admin access is for authorized Sugarcane Family staff only.</p></section>`);
   }
 
   if (state.modal.type === "post") {
@@ -726,6 +727,20 @@ async function pollPayment(paymentId, flow = state.paymentFlow) {
   notify("Payment is still processing. Check its status again before retrying.");
 }
 
+async function submitAdminAccess(form) {
+  const flow = state.paymentFlow;
+  if (!flow) return;
+  try {
+    const data = await request(`/api/${state.market.crop}/payments/admin-access`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ purpose: flow.purpose, listingId: flow.listingId, code: new FormData(form).get("code") }),
+    });
+    if (data.granted) await finishPaidFlow(flow);
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
 async function submitPayment(form) {
   const flow = state.paymentFlow;
   if (!flow) return;
@@ -1038,6 +1053,7 @@ root.addEventListener("submit", async (event) => {
   if (form.dataset.form === "profile") await submitProfile(form);
   if (form.dataset.form === "listing") await submitListing(form);
   if (form.dataset.form === "payment") await submitPayment(form);
+  if (form.dataset.form === "admin-access") await submitAdminAccess(form);
 });
 
 document.addEventListener("keydown", (event) => {

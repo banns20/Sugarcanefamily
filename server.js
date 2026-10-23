@@ -475,6 +475,14 @@ const paymentLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many payment requests. Please wait before trying again.' },
 });
+const adminAccessLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many admin access attempts. Please wait before trying again.' },
+});
+const adminAccessCode = process.env.ADMIN_ACCESS_CODE || 'code1200';
 const listingPostLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 5,
@@ -609,6 +617,30 @@ async function reconcileSuccessfulPayment(payment, callbackMetadata = null) {
 function publicPayment(row) {
   return { id: Number(row.id), status: row.status, purpose: row.purpose, amountKes: row.amount_kes, checkoutRequestId: row.checkout_request_id };
 }
+
+app.post('/api/:cropId/payments/admin-access', requireAuth, adminAccessLimiter, async (request, response) => {
+  const code = String(request.body?.code ?? '');
+  const purpose = String(request.body?.purpose ?? '');
+  const listingId = Number(request.body?.listingId);
+  const suppliedCode = Buffer.from(code);
+  const expectedCode = Buffer.from(adminAccessCode);
+  if (!code || suppliedCode.length !== expectedCode.length || !timingSafeEqual(suppliedCode, expectedCode)) {
+    return response.status(401).json({ error: 'That admin code is not valid.' });
+  }
+  if (purpose === 'seller_listing_credit') {
+    if (request.user.role !== 'seller') return response.status(400).json({ error: 'Switch to seller mode first.' });
+    const result = await pool.query('UPDATE market_users SET listing_credits=listing_credits+1 WHERE id=$1 AND crop_id=$2 RETURNING listing_credits', [request.user.id, request.crop.id]);
+    return response.json({ granted: true, listingCredits: result.rows[0]?.listing_credits ?? 0 });
+  }
+  if (purpose !== 'buyer_listing_reveal' || !Number.isSafeInteger(listingId) || listingId <= 0 || request.user.role !== 'buyer') {
+    return response.status(400).json({ error: 'Choose a valid buyer listing.' });
+  }
+  const listing = await pool.query('SELECT owner_user_id FROM market_listings WHERE id=$1 AND crop_id=$2', [listingId, request.crop.id]);
+  if (!listing.rows[0]) return response.status(404).json({ error: 'This listing is no longer available.' });
+  if (String(listing.rows[0].owner_user_id) === String(request.user.id)) return response.status(403).json({ error: 'You cannot unlock your own listing.' });
+  await pool.query('INSERT INTO market_entitlements (crop_id,user_id,listing_id,payment_id) VALUES ($1,$2,$3,NULL) ON CONFLICT (crop_id,user_id,listing_id) DO NOTHING', [request.crop.id, request.user.id, listingId]);
+  return response.json({ granted: true });
+});
 
 app.post('/api/:cropId/payments', requireAuth, paymentLimiter, async (request, response) => {
   const purpose = String(request.body?.purpose ?? '');
